@@ -14,7 +14,7 @@ from astropt.local_datasets import GalaxyImageDataset
 from astropt.model_utils import load_astropt
 
 
-def get_embeddings(reset = False):
+def get_embeddings(reset = False, *labels: str) -> tuple[np.ndarray, np.ndarray]:
     ## Check for cached embeddings
     if not reset and isfile("cache/zss.npy") and isfile("cache/yss.npy"):
         zss = np.load("cache/zss.npy")
@@ -64,30 +64,32 @@ def get_embeddings(reset = False):
             torch.from_numpy(np.array(idx["image"]).swapaxes(0, 2)).to(float)
         ).to(torch.float)
         galaxy_positions = torch.arange(0, len(galaxy), dtype=torch.long)
-        mag_g = idx["mag_g"]
         return {
             "images": galaxy,
             "images_positions": galaxy_positions,
-            "mag_g": mag_g,
+            **{label: idx[label] for label in labels}
         }
 
     model = load_astropt("Smith42/astroPT_v2.0", path="astropt/095M").to(device)
+    model.eval()
+    
     galproc = GalaxyImageDataset(
         None,
         spiral=True,
         transform={"images": data_transforms()},
         modality_registry=model.modality_registry,
     )
-    # load dataset: we select mag_g as it is easy for this example but there are many values in Smith42/galaxies v2.0, you can choose from any column in hf.co/datasets/Smith42/galaxies_metadata
+
+    # load dataset: we select all lablels present in the argument list
+    # as it is easy for this example but there are many values 
+    # in Smith42/galaxies v2.0, you can choose from any column in hf.co/datasets/Smith42/galaxies_metadata
     ds = (
         load_dataset("Smith42/galaxies", split="test", revision="v2.0", streaming=True)
-        .select_columns(("image", "mag_g"))
-        .filter(lambda idx: idx["mag_g"] is not None)
+        .select_columns(["image", *labels])
+        .filter(lambda idx: all(idx[label] is not None for label in labels))
         .map(partial(_process_galaxy_wrapper, func=galproc.process_galaxy))
         .with_format("torch")
-        .take(
-            1000
-        )  # use the first 1k examples of our dataset to shorten total inference time
+        .take(1000) # use the first 1k examples of our dataset to shorten total inference time
     )
     dl = DataLoader(
         ds,
@@ -101,7 +103,7 @@ def get_embeddings(reset = False):
         B = batch_to_device(B, device)
         zs = model.generate_embeddings(B)["images"].detach().cpu().numpy()
         zss.append(zs)
-        yss.append(B["mag_g"].detach().cpu().numpy())
+        yss.append(np.stack([B[label].detach().cpu().numpy() for label in labels], axis=1))
 
     zss = np.concatenate(zss, axis=0)
     yss = np.concatenate(yss, axis=0)
