@@ -1,0 +1,14 @@
+.vscode/
+
+.venv/
+env/
+venv/
+__pycache__/
+*.pyc
+
+.DS_Store
+_ipynb_checkpoints/
+
+data/
+cache/
+logs/

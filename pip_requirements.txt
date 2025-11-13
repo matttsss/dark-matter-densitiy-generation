@@ -1,0 +1,16 @@
+numpy
+scipy
+
+matplotlib
+seaborn
+
+scikit-learn
+umap-learn
+
+pandas
+
+--extra-index-url https://download.pytorch.org/whl/rocm6.4
+torch 
+torchvision
+
+astropt
