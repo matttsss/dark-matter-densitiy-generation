@@ -14,16 +14,17 @@ from astropt.local_datasets import GalaxyImageDataset
 from astropt.model_utils import load_astropt
 
 
-def get_embeddings(reset = False, *labels: str) -> tuple[np.ndarray, np.ndarray]:
+def get_embeddings(reset = False, nb_points: int = 1000, *labels: str) -> tuple[np.ndarray, np.ndarray]:
     ## Check for cached embeddings
     if not reset and isfile("cache/zss.npy") and isfile("cache/yss.npy"):
         zss = np.load("cache/zss.npy")
         yss = np.load("cache/yss.npy")
-        print(
-            "Embeddings file (zss.npy) detected so moving straight to linear probe and viz"
-        )
 
-        return zss, yss
+        if zss.shape[0] != nb_points:
+            print("Cached embeddings do not match requested number of points, regenerating...")
+        else:
+            print("Embeddings file (zss.npy) detected so moving straight to linear probe and viz")
+            return zss, yss
 
     ## Else generate embeddings
 
@@ -89,12 +90,13 @@ def get_embeddings(reset = False, *labels: str) -> tuple[np.ndarray, np.ndarray]
         .filter(lambda idx: all(idx[label] is not None for label in labels))
         .map(partial(_process_galaxy_wrapper, func=galproc.process_galaxy))
         .with_format("torch")
-        .take(1000) # use the first 1k examples of our dataset to shorten total inference time
+        .take(nb_points)
     )
     dl = DataLoader(
         ds,
         batch_size=32,
-        num_workers=0,
+        num_workers=10,
+        prefetch_factor=4
     )
 
     zss = []
