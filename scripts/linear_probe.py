@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from umap import UMAP
-from sklearn.manifold import TSNE
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
@@ -22,15 +21,15 @@ if __name__ == "__main__":
                     prog='PlotstroPT',
                     description='Generates plots for linear probe on astroPT embeddings')
     
-    parser.add_argument('--reset', action='store_true', default=False, help='Whether to reset cached embeddings')
+    parser.add_argument('--astro_pt_data', action='store_true', default=False, help='Whether to use astroPT data for embeddings (default: False, dark data)')
     parser.add_argument('--nb_points', type=int, default=1000, help='Number of points to use for embeddings')
-    parser.add_argument('--labels', nargs='+', default=["mag_g"], help='Labels to use for embeddings')
+    parser.add_argument('--labels', nargs='+', default=["mass"], help='Labels to use for embeddings')
     args = parser.parse_args()
     
     labels = args.labels
     
     print("Loading/generating embeddings...")
-    zss, yss = get_embeddings(args.reset, args.nb_points, *labels)
+    zss, labels = get_embeddings(args.astro_pt_data, args.nb_points, *labels)
 
     # Now let's visualise the embedding space by performing UMAP and plotting
     umap = UMAP(n_components=2)
@@ -46,53 +45,78 @@ if __name__ == "__main__":
     
     # Ensure axs is a 1D array we can index into
     axs = np.atleast_1d(axs).reshape(-1)
-    for i, label in enumerate(labels):
-        vmax = np.percentile(yss[:, i], 95)
-        sc = axs[i].scatter(X_umap[:, 0], X_umap[:, 1], c=yss[:, i], vmax=vmax, cmap="viridis")
+    for i, (label, data) in enumerate(labels.items()):
+        vmax = np.percentile(data, 95)
+        sc = axs[i].scatter(X_umap[:, 0], X_umap[:, 1], c=data, vmax=vmax, cmap="viridis")
+
         axs[i].set_title(label)
         fig.colorbar(sc, ax=axs[i], label=label)
     
     # hide any unused axes (when nplots < nrows * ncols)
     for j in range(nplots, axs.size):
         axs[j].axis('off')
+
+    fig.suptitle(f"UMAP projection of {'AstroPT galaxy embeddings' if args.astro_pt_data else 'Dark Matter embeddings'}")
     fig.tight_layout()
-    fig.savefig("figures/umap_magnitudes.png", dpi=300)
+
+    if args.astro_pt_data:
+        fig.savefig("figures/umap_astropt_magnitudes.png", dpi=300)
+    else:
+        fig.savefig("figures/umap_dark_magnitudes.png", dpi=300)
+    
     plt.show()
     plt.clf()
 
+    # Now let's train a linear probe to predict magnitude from embeddings
+    def train_probe(zs, ys):
+        probe = LinearRegression()
+        probe.fit(zs, ys)
+        return probe
 
-    # Set to False when infering on large ammounts of data
-    # It causses an `inf` to appear in the results
-    if True:  
-        def train_probe(zs, ys):
-            probe = LinearRegression()
-            probe.fit(zs, ys)
-            return probe
-        
-        print("Training probe...")
+    nplots = len(labels)
+    # maximum 4 plots per row
+    ncols = min(4, nplots) if nplots > 0 else 1
+    nrows = (nplots + ncols - 1) // ncols
+    fig, axs = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
+    
+    # Ensure axs is a 1D array we can index into
+    axs = np.atleast_1d(axs).reshape(-1)
+
+    for i, (label, data) in enumerate(labels.items()):        
+        print(f"Training probe on label {label}...")
         # Now we train a linear probe on half the data and test on the other half
         # In a "real" setting you may want to use a more powerful model than a linear regressor
         # (and possibly a more difficult problem then magnitude prediction ;) !)
         halfway = len(zss) // 2
-        y_mag_g = yss[..., 0]
-        probe = train_probe(zss[:halfway], y_mag_g[:halfway])
+        probe = train_probe(zss[:halfway], data[:halfway])
         pss = probe.predict(zss[halfway:])
         print(
-            f"MSE: {mean_squared_error(pss, y_mag_g[halfway:])} R2: {r2_score(pss, y_mag_g[halfway:])}"
+            f"MSE: {mean_squared_error(pss, data[halfway:])} R2: {r2_score(pss, data[halfway:])}"
         )
 
         # Plot predicted vs ground truth magnitude
-        reg = LinearRegression().fit(y_mag_g[halfway:].reshape(-1, 1), pss)
-        plt.plot(y_mag_g[halfway:], pss, ".")
-        plt.plot(
-            y_mag_g[halfway:],
-            reg.predict(y_mag_g[halfway:].reshape(-1, 1)),
+        reg = LinearRegression().fit(data[halfway:].reshape(-1, 1), pss)
+        axs[i].scatter(data[halfway:], pss)
+        axs[i].plot(
+            data[halfway:],
+            reg.predict(data[halfway:].reshape(-1, 1)),
             "--",
             color="red",
             label=f"Linear fit: $pred = {reg.coef_[0]:.2f} \\cdot x + {reg.intercept_:.2f}$",
         )
-        plt.xlabel("Ground truth magnitude")
-        plt.ylabel("Predicted magnitude")
-        plt.legend()
-        plt.savefig("figures/predicted_vs_ground_truth.png", dpi=300)
-        plt.show()
+        
+        axs[i].set_xlabel(f"Ground truth {label}")
+        axs[i].set_ylabel(f"Predicted {label}")
+        axs[i].legend()
+
+    # hide any unused axes (when nplots < nrows * ncols)
+    for j in range(nplots, axs.size):
+        axs[j].axis('off')
+
+    fig.suptitle(f"Linear probe predictions of {'AstroPT galaxy embeddings' if args.astro_pt_data else 'Dark Matter embeddings'}")
+    fig.tight_layout()
+    if args.astro_pt_data:
+        fig.savefig("figures/astropt_pred.png", dpi=300)
+    else:
+        fig.savefig("figures/dark_pred.png", dpi=300)
+    plt.show()
