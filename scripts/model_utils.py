@@ -1,16 +1,33 @@
-import numpy as np
+import torch
 
-class LinearRegression:
+class LinearRegression(torch.nn.Module):
 
     def __init__(self):
-        self.weights = None
-        self.bias = None
+        super().__init__()
+        self.W = None
 
-    def fit(self, X, y):
-        X_b = np.c_[np.ones((X.shape[0], 1)), X]
-        theta_best = np.linalg.pinv(X_b.T.dot(X_b)).dot(X_b.T).dot(y)
-        self.bias = theta_best[0]
-        self.weights = theta_best[1:]
-    
+    def fit(self, X, labels):
+        X = torch.concatenate([torch.ones(X.shape[0], 1), X], dim=1)
+
+        print(X.shape, labels.shape)
+        self.W = (torch.linalg.pinv(X.T @ X) @ X.T @ labels).detach()
+
+        return X @ self.W
+
     def predict(self, X):
-        return X.dot(self.weights) + self.bias
+        if self.W is None:
+            raise ValueError("Model has not been fitted yet.")
+        
+        X = torch.concatenate([torch.ones(X.shape[0], 1), X], dim=1)
+        return X @ self.W
+    
+
+
+def batch_to_device(batch, device):
+    if isinstance(batch, torch.Tensor):
+        return batch.to(device, non_blocking=True)
+    if isinstance(batch, dict):
+        return {k: batch_to_device(v, device) for k, v in batch.items()}
+    if isinstance(batch, (list,tuple)):
+        return type(batch)(batch_to_device(v, device) for v in batch)
+    return batch

@@ -10,6 +10,8 @@ from datasets import concatenate_datasets, Dataset
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from model_utils import batch_to_device
+
 def fetch_dataset(dataset_path: str):
 
     cache_file_path = f"cache/{'.'.join(dataset_path.split('/')[-1].split('.')[:-1])}"
@@ -87,14 +89,6 @@ def get_embeddings(model, dataset, labels: list[str]):
     model.eval()
 
 
-    def batch_to_device(batch, device):
-        if isinstance(batch, torch.Tensor):
-            return batch.to(device, non_blocking=True)
-        if isinstance(batch, dict):
-            return {k: batch_to_device(v, device) for k, v in batch.items()}
-        if isinstance(batch, (list,tuple)):
-            return type(batch)(batch_to_device(v, device) for v in batch)
-        return batch
   
     if has_metals:
         dl = DataLoader(
