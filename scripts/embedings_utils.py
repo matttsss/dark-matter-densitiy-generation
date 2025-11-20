@@ -1,6 +1,7 @@
 from os.path import isfile
 from functools import partial
 
+import einops
 import torch, pickle
 import numpy as np
 
@@ -9,59 +10,9 @@ from datasets import load_dataset, Dataset
 
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torchvision import transforms
 
-from astropt.local_datasets import GalaxyImageDataset
-from astropt.model_utils import load_astropt
-
-
-def get_embeddings(astro_pt_data, nb_points: int, *labels: str):
-    ## Else generate embeddings
-
-    device = 'cpu'
-    if torch.cuda.is_available():
-        device = 'cuda'
-    if torch.backends.mps.is_available():
-        device = 'mps'
-
-    print(f"Generating embeddings on device: {device}")
-
-    # set up HF galaxies in test set to be processed
-    def normalise(x):
-        std, mean = torch.std_mean(x, dim=1, keepdim=True)
-        return (x - mean) / (std + 1e-8)
-
-    def data_transforms():
-        transform = transforms.Compose(
-            [
-                transforms.Lambda(normalise),
-            ]
-        )
-        return transform
-
-    def batch_to_device(batch, device):
-        if isinstance(batch, torch.Tensor):
-            return batch.to(device, non_blocking=True)
-        if isinstance(batch, dict):
-            return {k: batch_to_device(v, device) for k, v in batch.items()}
-        if isinstance(batch, (list,tuple)):
-            return type(batch)(batch_to_device(v, device) for v in batch)
-        return batch
-
-    model = load_astropt("Smith42/astroPT_v2.0", path="astropt/095M").to(device)
-    model.eval()
-    
-    galproc = GalaxyImageDataset(
-        None,
-        spiral=True,
-        transform={"images": data_transforms()},
-        modality_registry=model.modality_registry,
-    )
-
-    # load dataset: we select all lablels present in the argument list
-    # as it is easy for this example but there are many values 
-    # in Smith42/galaxies v2.0, you can choose from any column in hf.co/datasets/Smith42/galaxies_metadata
-    if astro_pt_data:
+def get_datasets(is_astropt_data: bool, nb_points: int, labels: list[str]):
+    if is_astropt_data:
         ds = load_dataset("Smith42/galaxies", split="test", revision="v2.0", streaming=True)
 
         def _process_galaxy_wrapper(idx, func):
@@ -102,23 +53,74 @@ def get_embeddings(astro_pt_data, nb_points: int, *labels: str):
                 "images_positions": galaxy_positions,
                 **{label: idx[label] for label in labels}
             }
+    
+    def process_image(raw_galaxy):
+        """Process raw galaxy image into patches and normalize them"""
+        # TODO have a parameter?
+        patch_size = 16
+        patch_galaxy = einops.rearrange(
+            raw_galaxy,
+            "c (h p1) (w p2) -> (h w) (p1 p2 c)",
+            p1=patch_size,
+            p2=patch_size,
+        )
+
+        std, mean = torch.std_mean(patch_galaxy, dim=1, keepdim=True)
+        return (patch_galaxy - mean) / (std + 1e-8)
 
     ds = (ds.select_columns(["image", *labels])
             .filter(lambda idx: all(idx[label] is not None and np.isfinite(idx[label]) for label in labels))
-            .map(partial(_process_galaxy_wrapper, func=galproc.process_galaxy))
-            .with_format("torch")
+            .shuffle(seed=42)
             .take(nb_points)
+            .map(partial(_process_galaxy_wrapper, func=process_image))
+            .with_format("torch")
         )
   
-    dl = DataLoader(
-        ds,
-        batch_size=128,
-        num_workers=10,
-        prefetch_factor=4
-    )
+    return ds
+
+
+def get_embeddings(model, dataset, labels: list[str]):
+    device = 'cpu'
+    if torch.cuda.is_available():
+        device = 'cuda'
+    
+    has_metals = torch.backends.mps.is_available()
+    if has_metals:
+        device = 'mps'
+
+    print(f"Generating embeddings on device: {device}")
+
+    model = model.to(device)
+    model.eval()
+
+
+    def batch_to_device(batch, device):
+        if isinstance(batch, torch.Tensor):
+            return batch.to(device, non_blocking=True)
+        if isinstance(batch, dict):
+            return {k: batch_to_device(v, device) for k, v in batch.items()}
+        if isinstance(batch, (list,tuple)):
+            return type(batch)(batch_to_device(v, device) for v in batch)
+        return batch
+  
+    if has_metals:
+        dl = DataLoader(
+            dataset,
+            batch_size=64,
+            num_workers=0
+        )
+    else:
+        dl = DataLoader(
+            dataset,
+            batch_size=128,
+            num_workers=10,
+            prefetch_factor=3
+        )
+        
 
     zss = []
     yss = {label: [] for label in labels}
+    print(labels)
     for B in tqdm(dl):
         B = batch_to_device(B, device)
         zs = model.generate_embeddings(B)["images"].detach().cpu().numpy()
