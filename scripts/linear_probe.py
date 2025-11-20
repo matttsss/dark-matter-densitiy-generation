@@ -4,10 +4,9 @@ embeddings on a linear probe
 """
 
 import argparse
-import torch
 
 from plot_utils import plot_probes
-from embedings_utils import fetch_dataset, get_embeddings
+from embedings_utils import merge_datasets, get_embeddings
 
 from astropt.model_utils import load_astropt
 
@@ -27,11 +26,14 @@ if __name__ == "__main__":
     model = load_astropt("Smith42/astroPT_v2.0", 
                          path="astropt/095M")
 
-    dataset = fetch_dataset("data/DarkData/BAHAMAS/bahamas_0.1.pkl")
+    dataset = merge_datasets([
+        "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
+        "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
+        "data/DarkData/BAHAMAS/bahamas_1.pkl"])
+
     dataset = dataset.select_columns(["images", "images_positions", *labels_name]) \
-            .filter(lambda idx: all(idx[label] is not None and torch.isfinite(idx[label]) for label in labels_name)) \
             .shuffle(seed=42) \
-            .take(args.nb_points)
+            .take(args.nb_points)    
 
     zss, labels_dict = get_embeddings(model, dataset, labels_name)
 

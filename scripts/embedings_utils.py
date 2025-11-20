@@ -5,7 +5,7 @@ import torch, pickle
 import numpy as np
 
 from tqdm import tqdm
-from datasets import Dataset
+from datasets import concatenate_datasets, Dataset
 
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -23,7 +23,6 @@ def fetch_dataset(dataset_path: str):
 
     del metadata["name"]
     del metadata["galaxy_catalogues"]
-
     images = images[::, [0, 0, 0]]
     ds = Dataset.from_dict({"image": images, **metadata})
 
@@ -33,6 +32,8 @@ def fetch_dataset(dataset_path: str):
 
         image = idx["image"]  # [H,W,C] in numpy
         del idx["image"]
+
+        idx["norms"] = idx["norms"][0]
 
         # Upscale to 512x512
         image = F.interpolate(
@@ -68,6 +69,8 @@ def fetch_dataset(dataset_path: str):
   
     return ds
 
+def merge_datasets(datasets: list[str]) -> Dataset:
+    return concatenate_datasets([fetch_dataset(path) for path in datasets])
 
 def get_embeddings(model, dataset, labels: list[str]):
     device = 'cpu'
