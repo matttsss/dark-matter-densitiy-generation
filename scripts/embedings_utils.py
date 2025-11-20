@@ -1,80 +1,70 @@
-from os.path import isfile
-from functools import partial
+import os
 
 import einops
 import torch, pickle
 import numpy as np
 
 from tqdm import tqdm
-from datasets import load_dataset, Dataset
+from datasets import Dataset
 
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-def get_datasets(is_astropt_data: bool, nb_points: int, labels: list[str]):
-    if is_astropt_data:
-        ds = load_dataset("Smith42/galaxies", split="test", revision="v2.0", streaming=True)
+def fetch_dataset(dataset_path: str):
 
-        def _process_galaxy_wrapper(idx, func):
-            """This function ensures that the image is tokenised in the same way as
-            the pre-trained model is expecting"""
-            galaxy = func(
-                torch.from_numpy(np.array(idx["image"]).swapaxes(0, 2)).to(float)
-            ).to(torch.float)
-            galaxy_positions = torch.arange(0, len(galaxy), dtype=torch.long)
-            return {
-                "images": galaxy,
-                "images_positions": galaxy_positions,
-                **{label: idx[label] for label in labels}
-            }
+    cache_file_path = f"cache/{'.'.join(dataset_path.split('/')[-1].split('.')[:-1])}"
 
-    else:
-        with open("data/DarkData/BAHAMAS/bahamas_0.1.pkl", 'rb') as f:
-            metadata, images = pickle.load(f)
+    if os.path.isdir(cache_file_path):
+        print(f"Loading processed dataset from {cache_file_path}...")
+        return Dataset.load_from_disk(cache_file_path)
 
-        images = images[::, [0, 0, 0]]
-        ds = Dataset.from_dict({"image": images, **{label: metadata[label] for label in labels}})
+    with open(dataset_path, 'rb') as f:
+        metadata, images = pickle.load(f)
 
-        def _process_galaxy_wrapper(idx, func):
-            """This function ensures that the image is tokenised in the same way as
-            the pre-trained model is expecting"""
+    del metadata["name"]
+    del metadata["galaxy_catalogues"]
 
-            image = F.interpolate(
-                torch.Tensor(idx["image"], device="cpu").unsqueeze(0), # [C,H,W] -> [1,C,H,W]
-                size=(512, 512),
-                mode="bilinear",
-                align_corners=False,
-            ).squeeze(0)     
+    images = images[::, [0, 0, 0]]
+    ds = Dataset.from_dict({"image": images, **metadata})
 
-            galaxy = func(image).to(torch.float)
-            galaxy_positions = torch.arange(0, len(galaxy), dtype=torch.long)
-            return {
-                "images": galaxy,
-                "images_positions": galaxy_positions,
-                **{label: idx[label] for label in labels}
-            }
-    
-    def process_image(raw_galaxy):
-        """Process raw galaxy image into patches and normalize them"""
-        # TODO have a parameter?
+    def process_row(idx):
+        """This function ensures that the image is tokenised in the same way as
+        the pre-trained model is expecting"""
+
+        image = idx["image"]  # [H,W,C] in numpy
+        del idx["image"]
+
+        # Upscale to 512x512
+        image = F.interpolate(
+            torch.Tensor(image, device="cpu").unsqueeze(0), # [C,H,W] -> [1,C,H,W]
+            size=(512, 512),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+
+        # Patchify
         patch_size = 16
         patch_galaxy = einops.rearrange(
-            raw_galaxy,
+            image,
             "c (h p1) (w p2) -> (h w) (p1 p2 c)",
             p1=patch_size,
             p2=patch_size,
         )
 
+        # Normalize patches
         std, mean = torch.std_mean(patch_galaxy, dim=1, keepdim=True)
-        return (patch_galaxy - mean) / (std + 1e-8)
+        patch_galaxy = (patch_galaxy - mean) / (std + 1e-8)
 
-    ds = (ds.select_columns(["image", *labels])
-            .filter(lambda idx: all(idx[label] is not None and np.isfinite(idx[label]) for label in labels))
-            .shuffle(seed=42)
-            .take(nb_points)
-            .map(partial(_process_galaxy_wrapper, func=process_image))
-            .with_format("torch")
-        )
+        patch_galaxy = patch_galaxy.to(torch.float)
+        galaxy_positions = torch.arange(len(patch_galaxy), dtype=torch.long)
+        return {
+            "images": patch_galaxy,
+            "images_positions": galaxy_positions,
+            **idx
+        }
+
+    ds = ds.map(process_row).with_format("torch")    
+    ds.save_to_disk(cache_file_path)
   
     return ds
 
@@ -120,7 +110,6 @@ def get_embeddings(model, dataset, labels: list[str]):
 
     zss = []
     yss = {label: [] for label in labels}
-    print(labels)
     for B in tqdm(dl):
         B = batch_to_device(B, device)
         zs = model.generate_embeddings(B)["images"].detach().cpu().numpy()
