@@ -6,7 +6,7 @@ from astropt.model_utils import load_astropt
 
 from model_utils import LinearRegression
 from model_utils import batch_to_device
-from embedings_utils import merge_datasets, get_embeddings
+from embedings_utils import merge_datasets, compute_embeddings
 
 # Config
 pretrained_path = "model/ckpt.pt"
@@ -30,7 +30,7 @@ for param in model.parameters():
 dataset = merge_datasets([
         "data/DarkData/BAHAMAS/bahamas_0.1.pkl",
         "data/DarkData/BAHAMAS/bahamas_0.3.pkl",
-        "data/DarkData/BAHAMAS/bahamas_1.pkl",])
+        "data/DarkData/BAHAMAS/bahamas_1.pkl"])
 
 dataset = dataset.train_test_split(test_size=0.3, seed=42)
 train_dataset = dataset['train']
@@ -57,9 +57,16 @@ labels = ["BCG_e1", "BCG_e2", "BCG_stellar_conc", "mass", "lensing_norm", "label
 
 # Optimizer
 optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=learning_rate)
+criterion = torch.nn.MSELoss()
 
 val_losses = [[]]
 train_losses = [[]]
+
+with torch.no_grad():
+    all_embeddings, all_labels = compute_embeddings(model, train_dl, device, labels)
+    all_labels = torch.stack([all_labels[label] for label in labels], dim=1)
+    lin_reg = LinearRegression(device=device)
+    lin_reg.fit(all_embeddings, all_labels)
 
 # Training loop
 best_val_loss = float('inf')
@@ -69,53 +76,47 @@ for epoch in range(num_epochs):
     optimizer.zero_grad()
 
     train_embeddings = []
-    train_labels = {label: [] for label in labels}
+    train_labels = []
+    epoch_val_loss = 0
     for B in tqdm(train_dl):
 
         B = batch_to_device(B, device)
+        stacked_labels = torch.stack([B[label] for label in labels], dim=1)
         batch_embeddings = model.get_embeddings(B)["images"]
 
-        train_embeddings.append(batch_embeddings)
+        preds = lin_reg.predict(batch_embeddings)
+        loss = criterion(preds, stacked_labels)
 
-        for label in labels:
-            train_labels[label].append(B[label])
+        loss.backward(retain_graph=False)
+
+
+        epoch_val_loss += loss.item()
+
+        train_embeddings.append(batch_embeddings.detach())
+        train_labels.append(stacked_labels.detach())
+    
+    optimizer.step()
+    optimizer.zero_grad()
 
     train_embeddings = torch.cat(train_embeddings, dim=0)
-    train_labels = [torch.cat(train_labels[label], dim=0) for label in labels]
-    train_labels = torch.stack(train_labels, dim=1)
+    train_labels = torch.cat(train_labels, dim=0)
 
 
-    lin_reg = LinearRegression()
     lin_reg.fit(train_embeddings, train_labels)
-
-    train_loss = mean_squared_error(labels, preds)
-    epoch_train_loss = mean_squared_error(labels, preds,multioutput='raw_values')
-    loss_tensor = torch.tensor(train_loss, requires_grad=True).to(device)
-    train_losses.append(epoch_train_loss)
-
-    
-    loss_tensor.backward()
-    optimizer.step()
 
     # Validate
     model.eval()
     with torch.no_grad():
-        embeddings_val, labels_val = get_embeddings(model, val_dataset, labels=["target"])
-        
-        labels = labels_val[target]
-
+        embeddings_val, labels_val = compute_embeddings(model, val_dl, device, labels)
+        labels_val = torch.stack([labels_val[label] for label in labels], dim=1)
 
         preds = lin_reg.predict(embeddings_val)
-
-
-        val_loss = mean_squared_error(labels, preds)
-        epoch_val_loss = mean_squared_error(labels, preds,multioutput='raw_values')
-
+        val_loss = criterion(preds, labels_val)
         
-        val_losses.append(epoch_val_loss)
+        val_losses.append(val_loss.item())
 
 
-    print(f"Epoch {epoch}: val_loss {val_loss:.4f} and train_loss {train_loss:.4f}")
+    print(f"Epoch {epoch}: val_loss {val_loss:.4f} and train_loss {epoch_val_loss:.4f}")
     
     # Save best model
     if val_loss < best_val_loss:

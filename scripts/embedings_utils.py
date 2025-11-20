@@ -2,13 +2,11 @@ import os
 
 import einops
 import torch, pickle
-import numpy as np
 
 from tqdm import tqdm
 from datasets import concatenate_datasets, Dataset
 
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 
 from model_utils import batch_to_device
 
@@ -74,49 +72,20 @@ def fetch_dataset(dataset_path: str):
 def merge_datasets(datasets: list[str]) -> Dataset:
     return concatenate_datasets([fetch_dataset(path) for path in datasets])
 
-def get_embeddings(model, dataset, labels: list[str]):
-    device = 'cpu'
-    if torch.cuda.is_available():
-        device = 'cuda'
-    
-    has_metals = torch.backends.mps.is_available()
-    if has_metals:
-        device = 'mps'
-
-    print(f"Generating embeddings on device: {device}")
-
-    model = model.to(device)
+def compute_embeddings(model, dataloader, device: torch.device, label_names: list[str]):
     model.eval()
 
+    all_embeddings = []
+    all_labels = {label: [] for label in label_names}
+    with torch.no_grad():
+        for B in tqdm(dataloader):
+            B = batch_to_device(B, device)
+            embeddings = model.generate_embeddings(B)["images"]
+            all_embeddings.append(embeddings)
 
-  
-    if has_metals:
-        dl = DataLoader(
-            dataset,
-            batch_size=64,
-            num_workers=0
-        )
-    else:
-        dl = DataLoader(
-            dataset,
-            batch_size=128,
-            num_workers=10,
-            prefetch_factor=3
-        )
-        
+            for label in label_names:
+                all_labels[label].append(B[label])
 
-    zss = []
-    yss = {label: [] for label in labels}
-    for B in tqdm(dl):
-        B = batch_to_device(B, device)
-        zs = model.generate_embeddings(B)["images"].detach().cpu().numpy()
-
-        zss.append(zs)
-
-        for label in labels:
-            yss[label].append(B[label].detach().cpu().numpy())
-
-    zss = np.concatenate(zss, axis=0)
-    yss = {label: np.concatenate(yss[label], axis=0) for label in labels}
-
-    return zss, yss
+    all_embeddings = torch.cat(all_embeddings, dim=0)
+    all_labels = {label: torch.cat(all_labels[label], dim=0) for label in label_names}
+    return all_embeddings, all_labels
