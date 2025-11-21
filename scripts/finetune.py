@@ -11,20 +11,12 @@ from embedings_utils import merge_datasets, compute_embeddings
 # Config
 pretrained_path = "model/ckpt.pt"
 out_dir = "model/finetuned_weights"
-batch_size = 128
+batch_size = 16
 learning_rate = 1e-4
 num_epochs = 10
-device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-
-# Load pretrained model
-model = load_astropt(
-    repo_id=None,
-    path="model/",
-    weights_filename="ckpt.pt",
-).to(device)
-
-for param in model.parameters():
-    param.requires_grad = True
+device = torch.device("cuda" if torch.cuda.is_available() else 
+                      "mps" if torch.backends.mps.is_available() else 
+                      "cpu")
 
 # Load datasets
 dataset = merge_datasets([
@@ -41,19 +33,28 @@ test_dataset = val_test_dataset['test']
 train_dl = DataLoader(
     train_dataset,
     batch_size=batch_size,
-    shuffle=True,
-    num_workers=4,
-    prefetch_factor=3
+    pin_memory=True,
+    shuffle=True
 )
 
 val_dl = DataLoader(
     val_dataset,
     batch_size=batch_size,
-    shuffle=False,
-    num_workers=4,
+    pin_memory=True,
+    shuffle=False
 )
-
 labels = ["BCG_e1", "BCG_e2", "BCG_stellar_conc", "mass", "lensing_norm", "label", "norms"]
+
+# Load pretrained model
+model = load_astropt(
+    repo_id=None,
+    path="model/",
+    weights_filename="ckpt.pt",
+).to(device)
+
+for param in model.parameters():
+    param.requires_grad = True
+
 
 # Optimizer
 optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=learning_rate)
@@ -63,10 +64,10 @@ val_losses = [[]]
 train_losses = [[]]
 
 with torch.no_grad():
-    all_embeddings, all_labels = compute_embeddings(model, train_dl, device, labels)
-    all_labels = torch.stack([all_labels[label] for label in labels], dim=1)
+    train_embeddings, train_labels = compute_embeddings(model, train_dl, device, labels)
+    train_labels = torch.stack([train_labels[label] for label in labels], dim=1)
     lin_reg = LinearRegression(device=device)
-    lin_reg.fit(all_embeddings, all_labels)
+    lin_reg.fit(train_embeddings, train_labels)
 
 # Training loop
 best_val_loss = float('inf')
@@ -75,35 +76,32 @@ for epoch in range(num_epochs):
     model.train()
     optimizer.zero_grad()
 
-    train_embeddings = []
-    train_labels = []
+    print(f"Training epoch {epoch}...")
     epoch_val_loss = 0
     for B in tqdm(train_dl):
 
         B = batch_to_device(B, device)
-        stacked_labels = torch.stack([B[label] for label in labels], dim=1)
-        batch_embeddings = model.get_embeddings(B)["images"]
+        batch_labels = torch.stack([B[label] for label in labels], dim=1)
+        batch_embeddings = model.generate_embeddings(B)["images"]
 
         preds = lin_reg.predict(batch_embeddings)
-        loss = criterion(preds, stacked_labels)
+        loss = criterion(preds, batch_labels)
 
         loss.backward(retain_graph=False)
 
+        epoch_val_loss += loss.item() / len(train_dl)
 
-        epoch_val_loss += loss.item()
-
-        train_embeddings.append(batch_embeddings.detach())
-        train_labels.append(stacked_labels.detach())
-    
+            
     optimizer.step()
     optimizer.zero_grad()
 
-    train_embeddings = torch.cat(train_embeddings, dim=0)
-    train_labels = torch.cat(train_labels, dim=0)
+    print(f"Computing new embeddings for epoch {epoch}...")
+    with torch.no_grad():
+        train_embeddings, train_labels = compute_embeddings(model, train_dl, device, labels)
+        train_labels = torch.stack([train_labels[label] for label in labels], dim=1)
+        lin_reg.fit(train_embeddings, train_labels)
 
-
-    lin_reg.fit(train_embeddings, train_labels)
-
+    print(f"Validating epoch {epoch}...")
     # Validate
     model.eval()
     with torch.no_grad():
@@ -116,14 +114,14 @@ for epoch in range(num_epochs):
         val_losses.append(val_loss.item())
 
 
-    print(f"Epoch {epoch}: val_loss {val_loss:.4f} and train_loss {epoch_val_loss:.4f}")
+    print(f"Epoch {epoch}: val_loss {val_loss:.4f} and train_loss {epoch_val_loss:.4f}\n\n")
     
     # Save best model
     if val_loss < best_val_loss:
         best_val_loss = val_loss
         torch.save({
             'model': model.state_dict(),
-            'config': config,
+            'config': model.config,
             'val_loss': best_val_loss,
             'detailed_loss': epoch_val_loss, 
         }, f"{out_dir}/best_model.pt")
