@@ -23,14 +23,17 @@ if __name__ == "__main__":
     labels_name = args.labels    
     print("Loading/generating embeddings...")
 
-    model = load_astropt("Smith42/astroPT_v2.0", 
-                         path="astropt/095M")
-
+    weights_filename = "best_model.pt"
+    model = load_astropt(repo_id=None, 
+                         path="model/finetuned_weights/",
+                         weights_filename=weights_filename)
+ 
     dataset = merge_datasets([
         "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
         "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
-        "data/DarkData/BAHAMAS/bahamas_1.pkl"])
-
+        "data/DarkData/BAHAMAS/bahamas_1.pkl",
+        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"])
+    
     dataset = dataset.select_columns(["images", "images_positions", *labels_name]) \
             .shuffle(seed=42) \
             .take(args.nb_points)
@@ -50,7 +53,7 @@ if __name__ == "__main__":
     dl = DataLoader(
         dataset,
         batch_size = 64 if has_metals else 128,
-        num_workers = 0 if has_metals else 10,
+        num_workers = 0 if has_metals else 4,
         prefetch_factor = None if has_metals else 3
     )
 
@@ -58,6 +61,6 @@ if __name__ == "__main__":
     embeddings = embeddings.cpu().numpy()
     labels = {k: v.cpu().numpy() for k, v in labels.items()}
 
-    data_name = "astroPT" if args.astro_pt_data else "dark"
+    data_name = weights_filename.replace(".pt", "")
     print(f"Plotting probes for {data_name} data...")
     plot_probes(embeddings, labels, data_name)

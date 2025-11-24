@@ -3,11 +3,10 @@ import os
 import einops
 import torch, pickle
 
-from tqdm import tqdm
+from torch.nn.functional import interpolate
 from datasets import concatenate_datasets, Dataset
 
-import torch.nn.functional as F
-
+from utils import tqdm
 from model_utils import batch_to_device
 
 def fetch_dataset(dataset_path: str):
@@ -36,7 +35,7 @@ def fetch_dataset(dataset_path: str):
         idx["norms"] = idx["norms"][0]
 
         # Upscale to 512x512
-        image = F.interpolate(
+        image = interpolate(
             torch.Tensor(image, device="cpu").unsqueeze(0), # [C,H,W] -> [1,C,H,W]
             size=(512, 512),
             mode="bilinear",
