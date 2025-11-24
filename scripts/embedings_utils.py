@@ -71,13 +71,14 @@ def fetch_dataset(dataset_path: str):
 def merge_datasets(datasets: list[str]) -> Dataset:
     return concatenate_datasets([fetch_dataset(path) for path in datasets])
 
-def compute_embeddings(model, dataloader, device: torch.device, label_names: list[str]):
+def compute_embeddings(model, dataloader, device: torch.device, label_names: list[str],
+                       disable_tqdm: bool = False):
     model.eval()
 
     all_embeddings = []
     all_labels = {label: [] for label in label_names}
     with torch.no_grad():
-        for B in tqdm(dataloader):
+        for B in tqdm(dataloader, display_training_bar=not disable_tqdm):
             B = batch_to_device(B, device)
             embeddings = model.generate_embeddings(B)["images"]
             all_embeddings.append(embeddings)

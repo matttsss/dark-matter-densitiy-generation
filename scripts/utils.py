@@ -1,10 +1,9 @@
 import os, sys
 import warnings
 
-def tqdm(iterable):
-    if not os.isatty(sys.stdout.fileno()):
-        warnings.warn("TQDM disabled because output is not a TTY.")
+def tqdm(iterable, display_training_bar=True):
+    if not (display_training_bar and sys.stdout.isatty()):
         return iterable
     else:
         from tqdm.auto import tqdm as _tqdm
-        return _tqdm(iterable)
+        return _tqdm(iterable, disable=not display_training_bar)
