@@ -2,18 +2,21 @@ import torch, wandb
 from dataclasses import asdict
 
 from torch.utils.data import DataLoader
-from astropt.model_utils import load_astropt
 
-from model_utils import LinearRegression
-from model_utils import batch_to_device
-from embedings_utils import merge_datasets, compute_embeddings
+from model_utils import load_model, batch_to_device
+from embedings_utils import merge_datasets
 
 # Config
-pretrained_path = ("model/", "ckpt.pt")
+pretrained_path = "model/ckpt.pt"
 out_dir = "model/finetuned_weights"
-batch_size = 16
+batch_size = 32
 learning_rate = 1e-4
+weight_decay = 1e-3
+lora_r = 8  # LoRA rank
+betas = (0.9, 0.999)
 num_epochs = 20
+labels = ["BCG_e1", "BCG_e2", "BCG_stellar_conc", "mass", "label"]
+
 device = torch.device("cuda" if torch.cuda.is_available() else 
                       "mps" if torch.backends.mps.is_available() else 
                       "cpu")
@@ -23,12 +26,17 @@ run = wandb.init(
     entity="matttsss-epfl",
     # Set the wandb project where this run will be logged.
     project="astropt_finetune",
-    name="test_run",
+    name="Hubber Loss Cosine Annealing LR",
     # Track hyperparameters and run metadata.
     config={
         "learning_rate": learning_rate,
+        "weight_decay": weight_decay,
         "architecture": "AstroPT",
         "dataset": "BAHAMAS 4/6",
+        "batch_size": batch_size,
+        "betas": betas,
+        "lora_r": lora_r,
+        "labels": labels,
         "epochs": num_epochs,
     },
 )
@@ -58,48 +66,28 @@ val_dl = DataLoader(
     shuffle=False
 )
 
-labels = ["BCG_e1", "BCG_e2", "BCG_stellar_conc", "mass", "projection", "lensing_norm", "label"] # "norms", "redshift",
-problematic_labels = torch.tensor([i for i, label in enumerate(labels) if label in ["lensing_norm"]])
-
 # Load pretrained model
-model = load_astropt(
-    repo_id=None,
-    path=pretrained_path[0],
-    weights_filename=pretrained_path[1],
-).to(device)
+model = load_model(pretrained_path, device, lora_r, output_dim=len(labels))
 
 # Optimizer
-optimizer = model.configure_optimizers(weight_decay=1e-5, learning_rate=learning_rate, betas=(0.9, 0.999), device_type=device)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=0, last_epoch=-1)
-criterion = torch.nn.HuberLoss()
-
-val_losses = [[]]
-train_losses = [[]]
-
-with torch.no_grad():
-    train_embeddings, train_labels = compute_embeddings(model, train_dl, device, labels, disable_tqdm=True)
-    train_labels = torch.stack([train_labels[label] for label in labels], dim=1)
-    lin_reg = LinearRegression(device=device)
-    lin_reg.fit(train_embeddings, train_labels)
+optimizer = model.configure_optimizers(
+    weight_decay=weight_decay, learning_rate=learning_rate, 
+    betas=betas, device_type=device)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 
+    T_max=num_epochs, eta_min=0, last_epoch=-1)
 
 # Training loop
 best_val_loss = float('inf')
 for epoch in range(num_epochs):
-    # Train
-    model.train()
 
+    model.train()
     print(f"Training epoch {epoch}...")
     epoch_train_loss = 0
     for B in train_dl:
 
         B = batch_to_device(B, device)
         batch_labels = torch.stack([B[label] for label in labels], dim=1)
-        batch_labels[:, problematic_labels] = torch.log(batch_labels[:, problematic_labels])
-        batch_embeddings = model.generate_embeddings(B)["images"]
-
-        preds = lin_reg.predict(batch_embeddings)
-        preds[:, problematic_labels] = torch.log(preds[:, problematic_labels])
-        loss = criterion(preds, batch_labels)
+        res, loss = model.get_task_prediction(B, targets=batch_labels)
 
         loss.backward(retain_graph=False)
 
@@ -110,33 +98,25 @@ for epoch in range(num_epochs):
     optimizer.zero_grad()
     scheduler.step()
 
-    print(f"Computing new embeddings for epoch {epoch}...")
-    with torch.no_grad():
-        train_embeddings, train_labels = compute_embeddings(model, train_dl, device, labels, disable_tqdm=True)
-        train_labels = torch.stack([train_labels[label] for label in labels], dim=1)
-        lin_reg.fit(train_embeddings, train_labels)
-
-    print(f"Validating epoch {epoch}...")
-    # Validate
     model.eval()
+    print(f"Validating epoch {epoch}...")
+    epoch_val_loss = 0
     with torch.no_grad():
-        embeddings_val, labels_val = compute_embeddings(model, val_dl, device, labels, disable_tqdm=True)
-        labels_val = torch.stack([labels_val[label] for label in labels], dim=1)
-        labels_val[:, problematic_labels] = torch.log(labels_val[:, problematic_labels])
 
-        preds = lin_reg.predict(embeddings_val)
-        preds[:, problematic_labels] = torch.log(preds[:, problematic_labels])
-        val_loss = criterion(preds, labels_val)
-        
-        val_losses.append(val_loss.item())
+        for B in val_dl:
 
+            B = batch_to_device(B, device)
+            batch_labels = torch.stack([B[label] for label in labels], dim=1)
+            res, loss = model.get_task_prediction(B, targets=batch_labels)
 
-    print(f"Epoch {epoch}: val_loss {val_loss:.4f} and train_loss {epoch_train_loss:.4f}\n\n")
-    run.log({"val_loss": val_loss.item(), "train_loss": epoch_train_loss, "learning_rate": optimizer.param_groups[0]['lr']})
+            epoch_val_loss += loss.item() / len(val_dl)
+
+    print(f"Epoch {epoch}: val_loss {epoch_val_loss:.4f} and train_loss {epoch_train_loss:.4f}\n\n")
+    run.log({"val_loss": epoch_val_loss, "train_loss": epoch_train_loss, "learning_rate": optimizer.param_groups[0]['lr']})
 
     # Save best model
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
+    if epoch_val_loss < best_val_loss:
+        best_val_loss = epoch_val_loss
         torch.save({
             'model': model.state_dict(),
             'model_args': asdict(model.config),
