@@ -1,33 +1,32 @@
 import torch, wandb
 from dataclasses import asdict
 
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from model_utils import load_model, batch_to_device
 from embedings_utils import merge_datasets
 
 # Config
-wandb_run = None  # Set to wandb.run to log head training metrics to wandb
-
 pretrained_path = "model/ckpt.pt"
-out_dir = "model/finetuned_weights"
-batch_size = 32
-learning_rate = 1e-4
+batch_size = 150
+learning_rate = 1e-3
 weight_decay = 1e-3
-lora_r = 8  # LoRA rank
+lora_r = 0  # LoRA rank
 betas = (0.9, 0.999)
-num_epochs = 20
-labels = ["BCG_e1", "BCG_e2", "BCG_stellar_conc", "mass", "label"]
+num_epochs = 50
+label_names = ["BCG_e1", "BCG_e2", "BCG_stellar_conc", "mass", "label"]
 
 device = torch.device("cuda" if torch.cuda.is_available() else 
                       "mps" if torch.backends.mps.is_available() else 
                       "cpu")
+
 if True:
     wandb_run = wandb.init(
         # Set the wandb entity where your project will be logged (generally your team name).
         entity="matttsss-epfl",
         # Set the wandb project where this run will be logged.
-        project="astropt_finetune",
+        project="astropt_finetune_head",
         name="Hubber Loss Cosine Annealing LR",
         # Track hyperparameters and run metadata.
         config={
@@ -38,17 +37,31 @@ if True:
             "batch_size": batch_size,
             "betas": betas,
             "lora_r": lora_r,
-            "labels": labels,
+            "labels": label_names,
             "epochs": num_epochs,
         },
     )
+else:
+    wandb_run = None
+
+print(f"Using device: {device}")
+
+def merge_columns(row):
+    merged_labels = torch.stack([row[label] for label in label_names], dim=0)
+    return {
+        "images": row["images"],
+        "images_positions": row["images_positions"],
+        "labels": merged_labels
+    }
 
 # Load datasets
 dataset = merge_datasets([
         "data/DarkData/BAHAMAS/bahamas_0.1.pkl",
         "data/DarkData/BAHAMAS/bahamas_0.3.pkl",
         "data/DarkData/BAHAMAS/bahamas_1.pkl",
-        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"])
+        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"]) \
+        .select_columns(["images", "images_positions", *label_names]) \
+        .map(merge_columns)
 
 dataset = dataset.train_test_split(test_size=0.3, seed=42)
 train_dataset = dataset['train']
@@ -57,80 +70,91 @@ val_dataset = dataset['test']
 train_dl = DataLoader(
     train_dataset,
     batch_size=batch_size,
+    num_workers=2,
+    prefetch_factor=2,
     pin_memory=True,
     shuffle=True
 )
 
 val_dl = DataLoader(
     val_dataset,
-    batch_size=128,
+    batch_size=batch_size,
+    num_workers=2,
+    prefetch_factor=2,
     pin_memory=True,
     shuffle=False
 )
 
 # Load pretrained model
-model = load_model(pretrained_path, device, lora_r=lora_r, output_dim=len(labels))
+model = load_model(pretrained_path, device, lora_r, output_dim=len(label_names))
+print(f"Loaded model from {pretrained_path}")
 
-# Optimizer
+# Freeze all model parameters except LoRA and task head
+for p in model.parameters(): p.requires_grad = False
+for p in model.task_head.parameters(): p.requires_grad = True
+# lora.mark_only_lora_as_trainable(model)
+
 optimizer = model.configure_optimizers(
     weight_decay=weight_decay, learning_rate=learning_rate, 
-    betas=betas, device_type=device)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 
-    T_max=num_epochs, eta_min=0, last_epoch=-1)
+    betas=betas, device_type=device
+)
 
-# Training loop
+# ===============================================================
+# =================== Run head optimization =====================
+# ===============================================================
 best_val_loss = float('inf')
 for epoch in range(num_epochs):
-
+    
     model.train()
     print(f"Training epoch {epoch}...")
-    epoch_train_loss = 0
+    
+    train_loss = 0
     for B in train_dl:
-
         B = batch_to_device(B, device)
-        batch_labels = torch.stack([B[label] for label in labels], dim=1)
-        res, loss = model.get_task_prediction(B, targets=batch_labels)
+        with torch.no_grad():
+            embeddings = model.get_embeddings(B)["images"]
+        
+        res = model.task_head(embeddings)
+        loss = F.huber_loss(res, B["labels"])
 
-        loss.backward(retain_graph=False)
+        loss.backward()
 
-        epoch_train_loss += loss.item() / len(train_dl)
+        train_loss += loss.item() / len(train_dl)
 
-            
     optimizer.step()
     optimizer.zero_grad()
-    scheduler.step()
 
     model.eval()
     print(f"Validating epoch {epoch}...")
-    epoch_val_loss = 0
+    
+    val_loss = 0
     with torch.no_grad():
 
         for B in val_dl:
-
             B = batch_to_device(B, device)
-            batch_labels = torch.stack([B[label] for label in labels], dim=1)
-            res, loss = model.get_task_prediction(B, targets=batch_labels)
+            with torch.no_grad():
+                embeddings = model.get_embeddings(B)["images"]
 
-            epoch_val_loss += loss.item() / len(val_dl)
+            res = model.task_head(embeddings)
+            loss = F.huber_loss(res, B["labels"])
 
-    print(f"Epoch {epoch}: val_loss {epoch_val_loss:.4f} and train_loss {epoch_train_loss:.4f}\n\n")
+            val_loss += loss.item() / len(val_dl)
+
+
+    print(f"Epoch {epoch}: val_loss {val_loss:.4f} and train_loss {train_loss:.4f}\n\n")
     if wandb_run is not None:
         wandb_run.log({
-            "val_loss": epoch_val_loss, 
-            "train_loss": epoch_train_loss, 
-            "learning_rate": optimizer.param_groups[0]['lr']
+            "head_train_loss": train_loss,
+            "head_val_loss": val_loss,
         })
 
-    # Save best model
-    if epoch_val_loss < best_val_loss:
-        best_val_loss = epoch_val_loss
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
         torch.save({
             'model': model.state_dict(),
             'model_args': asdict(model.config),
             'modality_registry': model.modality_registry,
             'val_loss': best_val_loss,
-            'epoch_train_loss': epoch_train_loss, 
-        }, f"{out_dir}/best_model.pt")
+        }, f"model/finetuned_head.pt")
 
-if wandb_run is not None:
-    wandb_run.finish()
+wandb_run.finish()
