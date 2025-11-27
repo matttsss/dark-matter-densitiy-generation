@@ -3,10 +3,12 @@ from dataclasses import asdict
 
 from torch.utils.data import DataLoader
 
-from model_utils import load_model, batch_to_device
+from model_utils import load_model, batch_to_device, train_model_head
 from embedings_utils import merge_datasets
 
 # Config
+wandb_run = None  # Set to wandb.run to log head training metrics to wandb
+
 pretrained_path = "model/ckpt.pt"
 out_dir = "model/finetuned_weights"
 batch_size = 32
@@ -20,26 +22,26 @@ labels = ["BCG_e1", "BCG_e2", "BCG_stellar_conc", "mass", "label"]
 device = torch.device("cuda" if torch.cuda.is_available() else 
                       "mps" if torch.backends.mps.is_available() else 
                       "cpu")
-
-run = wandb.init(
-    # Set the wandb entity where your project will be logged (generally your team name).
-    entity="matttsss-epfl",
-    # Set the wandb project where this run will be logged.
-    project="astropt_finetune",
-    name="Hubber Loss Cosine Annealing LR",
-    # Track hyperparameters and run metadata.
-    config={
-        "learning_rate": learning_rate,
-        "weight_decay": weight_decay,
-        "architecture": "AstroPT",
-        "dataset": "BAHAMAS 4/6",
-        "batch_size": batch_size,
-        "betas": betas,
-        "lora_r": lora_r,
-        "labels": labels,
-        "epochs": num_epochs,
-    },
-)
+if False:
+    wandb_run = wandb.init(
+        # Set the wandb entity where your project will be logged (generally your team name).
+        entity="matttsss-epfl",
+        # Set the wandb project where this run will be logged.
+        project="astropt_finetune",
+        name="Hubber Loss Cosine Annealing LR",
+        # Track hyperparameters and run metadata.
+        config={
+            "learning_rate": learning_rate,
+            "weight_decay": weight_decay,
+            "architecture": "AstroPT",
+            "dataset": "BAHAMAS 4/6",
+            "batch_size": batch_size,
+            "betas": betas,
+            "lora_r": lora_r,
+            "labels": labels,
+            "epochs": num_epochs,
+        },
+    )
 
 # Load datasets
 dataset = merge_datasets([
@@ -68,6 +70,9 @@ val_dl = DataLoader(
 
 # Load pretrained model
 model = load_model(pretrained_path, device, lora_r=lora_r, output_dim=len(labels))
+
+model = train_model_head(model, train_dl, val_dl, labels, device, num_epochs,
+                         1e-3, 1e-3, betas, wandb_run)
 
 # Optimizer
 optimizer = model.configure_optimizers(
@@ -112,7 +117,12 @@ for epoch in range(num_epochs):
             epoch_val_loss += loss.item() / len(val_dl)
 
     print(f"Epoch {epoch}: val_loss {epoch_val_loss:.4f} and train_loss {epoch_train_loss:.4f}\n\n")
-    run.log({"val_loss": epoch_val_loss, "train_loss": epoch_train_loss, "learning_rate": optimizer.param_groups[0]['lr']})
+    if wandb_run is not None:
+        wandb_run.log({
+            "val_loss": epoch_val_loss, 
+            "train_loss": epoch_train_loss, 
+            "learning_rate": optimizer.param_groups[0]['lr']
+        })
 
     # Save best model
     if epoch_val_loss < best_val_loss:
@@ -125,4 +135,5 @@ for epoch in range(num_epochs):
             'epoch_train_loss': epoch_train_loss, 
         }, f"{out_dir}/best_model.pt")
 
-wandb.finish()
+if wandb_run is not None:
+    wandb_run.finish()

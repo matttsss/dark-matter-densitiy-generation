@@ -1,4 +1,5 @@
 import torch
+
 from astropt.model import GPT, GPTConfig
 
 def load_model(checkpoint_path, device, strict=True, get_label_names = False, **extra_model_config):
@@ -27,7 +28,6 @@ def load_model(checkpoint_path, device, strict=True, get_label_names = False, **
     model.to(device)
 
     return (model, checkpoint["target_labels"]) if get_label_names else model
-
 
 def batch_to_device(batch, device):
     if isinstance(batch, torch.Tensor):
