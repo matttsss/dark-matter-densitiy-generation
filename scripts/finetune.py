@@ -67,7 +67,7 @@ val_dl = DataLoader(
 )
 
 # Load pretrained model
-model = load_model(pretrained_path, device, lora_r, output_dim=len(labels))
+model = load_model(pretrained_path, device, lora_r=lora_r, output_dim=len(labels))
 
 # Optimizer
 optimizer = model.configure_optimizers(
