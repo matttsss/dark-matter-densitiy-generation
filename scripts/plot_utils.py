@@ -110,7 +110,7 @@ def plot_probes(embeddings, labels_dict, data_name):
         ax.set_title(f"Predictions for {label_name}\nMSE: {mse:.4f}, R2: {r2:.4f}")
         ax.set_xlabel(f"Ground truth {label_name}")
         ax.set_ylabel(f"Predicted {label_name}")
-
+        ax.legend()
     
     fig = plot_labels(plot_probe_predictions, f"Normalized linear probe predictions of {data_name} embeddings", 
                       list(labels_dict.keys()), embeddings=embeddings, labels_dict=labels_dict)
