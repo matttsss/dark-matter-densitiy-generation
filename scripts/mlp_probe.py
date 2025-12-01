@@ -29,7 +29,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     labels_name = args.labels    
-    weights_filename = "lora_32_5_labels.pt"
+    weights_filename = "finetuned_head_2_labels.pt"
     
     print("Loading/generating embeddings...")
  
@@ -119,28 +119,25 @@ if __name__ == "__main__":
     # Plot Probe predictions
     # =============================================================================
 
-    def plot_probe_predictions(fig, ax, label_name, embeddings, labels_dict):
-        label_data = labels_dict[label_name]
+    def plot_probe_predictions(fig, ax, label_name, ref_dict, preds_dict):
+        ref_data = ref_dict[label_name]
+        pred_data = preds_dict[label_name]
 
         # Normalize label data
-        # mean, std = label_data.mean(), label_data.std()
-        # label_data = (label_data - mean) / std
-
-        # Train linear probe to predict label from embeddings
-        halfway = len(embeddings) // 2
-        probe = LinearRegression().fit(embeddings[:halfway], label_data[:halfway])
-        pss = probe.predict(embeddings[halfway:])
+        mean, std = ref_data.mean(), ref_data.std()
+        ref_data = (ref_data - mean) / std
+        pred_data = (pred_data - mean) / std
 
         # Compute metrics
-        mse = mean_squared_error(pss, label_data[halfway:])
-        r2 = r2_score(pss, label_data[halfway:])
+        mse = mean_squared_error(ref_data, pred_data)
+        r2 = r2_score(ref_data, pred_data)
 
         # Plot predictions vs ground truth
-        reg = LinearRegression().fit(label_data[halfway:].reshape(-1, 1), pss)
-        ax.scatter(label_data[halfway:], pss, alpha=0.1)
+        reg = LinearRegression().fit(ref_data.reshape(-1, 1), pred_data)
+        ax.scatter(ref_data, pred_data, alpha=0.1)
         ax.plot(
-            label_data[halfway:],
-            reg.predict(label_data[halfway:].reshape(-1, 1)),
+            ref_data,
+            reg.predict(ref_data.reshape(-1, 1)),
             color="red",
             label=f"$pred = {reg.coef_[0]:.2f} \\cdot x + {reg.intercept_:.2f}$",
         )
@@ -152,7 +149,7 @@ if __name__ == "__main__":
 
     
     fig = plot_labels(plot_probe_predictions, f"Normalized linear probe predictions of {data_name} embeddings", 
-                      labels_name, embeddings=embeddings, labels_dict=labels)
+                      labels_name, preds_dict=predictions, ref_dict=labels)
     
     fig.savefig(f"figures/{data_name}_pred.png", dpi=300)
     plt.show()
@@ -166,7 +163,7 @@ if __name__ == "__main__":
     unique_cross_sections = np.unique(labels["label"])
     for cross_section in unique_cross_sections:
         mask = labels["label"] == cross_section
-        ax.hist(predictions["label"][mask], bins=45, alpha=0.5, label=f"Label {cross_section:.3f}")
+        ax.hist(predictions["label"][mask], bins=45, alpha=1/len(unique_cross_sections), label=f"Label {cross_section:.3f}")
     ax.set_xlabel("Mass")
     ax.set_ylabel("Count")
     ax.set_title(f"Mass distribution for different labels in {data_name} data")
