@@ -102,7 +102,7 @@ class DDPM(nn.Module):
         
         return mean
     
-    @torch.no_grad()
+    
     def p_sample(self, x_t, t, conditions):
         """
         REVERSE PROCESS SAMPLING: Sample x_{t-1} ~ p_θ(x_{t-1} | x_t)

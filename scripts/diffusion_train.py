@@ -1,12 +1,13 @@
 import argparse
+
 from generative_model.DDPM import DDPM
 from model_utils import load_model
-from embedings_utils import merge_datasets,compute_embeddings, labels_name
+from embedings_utils import merge_datasets, compute_embeddings, labels_name
 import torch
 from torch.utils.data import TensorDataset, random_split
 import wandb
 
-def training_script(output_dir,weights_path):
+def training_script(output_dir = "../results_diffusion",weights_path = "../model/finetuned_contrastive_ckpt.pt"):
 
     device = torch.device("cuda" if torch.cuda.is_available() else 
                       "mps" if torch.backends.mps.is_available() else 
@@ -63,7 +64,8 @@ def training_script(output_dir,weights_path):
 
     
     diffusion_model = DDPM()
-
+    diffusion_model.to(device)
+    
     epochs = 50
 
     optimizer = torch.optim.AdamW(diffusion_model.parameters(), lr=3e-4)
@@ -81,8 +83,8 @@ def training_script(output_dir,weights_path):
         loss = 0
 
         for batch in dataloader_train:
-            x_0 = batch[0]
-            conditions = batch[1:]
+            x_0 = batch[0].to(device)
+            conditions = batch[1:].to(device)
 
             t = torch.randint(0, diffusion_model.timesteps, (x_0.size(0),), dtype=torch.long)
 
@@ -106,8 +108,8 @@ def training_script(output_dir,weights_path):
             diffusion_model.eval()
 
             for batch in dataloader_val:
-                x_0 = batch['data']
-                conditions = batch['conditions']
+                x_0 = batch[0].to(device)
+                conditions = batch[1:].to(device)
 
                 t = torch.randint(0, diffusion_model.timesteps, (x_0.size(0),), dtype=torch.long)
 
@@ -132,9 +134,10 @@ def training_script(output_dir,weights_path):
 if __name__ == "__main__":
 
     args = argparse.ArgumentParser()
-    args.add_argument("--output_dir", type=str, required=True, help="Output directory to save the trained model")
+    args.add_argument("--output_dir", type=str, help="Output directory to save the trained model")
+    args.add_argument("--weights_path", type=str, default="", help="Path to pretrained weights")
     args = args.parse_args()
     
-    training_script(args.output_dir)
+    training_script(args.output_dir, args.weights_path)
 
 

@@ -17,3 +17,5 @@ cache/
 logs/
 figures/
 model/
+
+results_diffusion/
