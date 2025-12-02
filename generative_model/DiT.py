@@ -1,10 +1,11 @@
-#Code inspired heavily by : https://github.com/facebookresearch/DiT/blob/main/models.py
+#Code adapted and sourced from : https://github.com/facebookresearch/DiT/blob/main/models.py
 
 import torch
 import torch.nn as nn
+import numpy as np
 
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
-from .DiT_utils import get_2d_sincos_pos_embed
+from .DiT_utils import get_1d_sincos_pos_embed_from_grid
 
 
 def modulate(x, shift, scale):
@@ -74,10 +75,10 @@ class FinalLayer(nn.Module):
     """
     The final layer of DiT.
     """
-    def __init__(self, hidden_size, patch_size, out_channels):
+    def __init__(self, hidden_size, patch_size):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
+        self.linear = nn.Linear(hidden_size, patch_size, bias=True)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
@@ -92,39 +93,37 @@ class FinalLayer(nn.Module):
 
 class DiT(nn.Module):
     """
-    Diffusion model with a Transformer backbone.
+    Diffusion model with a Transformer backbone for 1D vectors.
     """
     def __init__(
         self,
-        input_size=32,
-        patch_size=2,
-        in_channels=4,
+        input_size=712,
+        patch_size=4,
         hidden_size=128,
-        depth=28,
-        num_heads=16,
+        depth=3,
+        num_heads=3,
         mlp_ratio=4.0,
-        class_dropout_prob=0.1,
-        num_classes=1000,
-        learn_sigma=True,
     ):
         super().__init__()
-        self.learn_sigma = learn_sigma
-        self.in_channels = in_channels
-        self.out_channels = in_channels * 2 if learn_sigma else in_channels
+        self.input_size = input_size
         self.patch_size = patch_size
         self.num_heads = num_heads
-
-        self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
+        
+        # Calculate number of patches for 1D vector
+        assert input_size % patch_size == 0, f"input_size {input_size} must be divisible by patch_size {patch_size}"
+        self.num_patches = input_size // patch_size
+        
+        # Linear projection to embed patches
+        self.x_embedder = nn.Linear(patch_size, hidden_size)
         self.t_embedder = TimestepEmbedder(hidden_size)
-        self.model_params_embedder = ConditionsEmbedder(hidden_size,conditions_size=2)
-        num_patches = self.x_embedder.num_patches
+        
         # Will use fixed sin-cos embedding:
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, hidden_size), requires_grad=False)
 
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
-        self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
+        self.final_layer = FinalLayer(hidden_size, patch_size)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -137,16 +136,12 @@ class DiT(nn.Module):
         self.apply(_basic_init)
 
         # Initialize (and freeze) pos_embed by sin-cos embedding:
-        pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], int(self.x_embedder.num_patches ** 0.5))
+        pos_embed = get_1d_sincos_pos_embed_from_grid(self.pos_embed.shape[-1], np.arange(self.num_patches))
         self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
 
-        # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
-        w = self.x_embedder.proj.weight.data
-        nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
-        nn.init.constant_(self.x_embedder.proj.bias, 0)
-
-        # Initialize label embedding table:
-        nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
+        # Initialize patch embedding:
+        nn.init.xavier_uniform_(self.x_embedder.weight)
+        nn.init.constant_(self.x_embedder.bias, 0)
 
         # Initialize timestep embedding MLP:
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
@@ -158,39 +153,57 @@ class DiT(nn.Module):
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
         # Zero-out output layers:
-        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 1)
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
-        nn.init.constant_(self.final_layer.linear.weight, 1)
+        nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
+    def patchify(self, x):
+        """
+        Convert 1D vector into patches.
+        x: (N, input_size) tensor
+        returns: (N, num_patches, patch_size) tensor
+        """
+        batch_size = x.shape[0]
+        x = x.reshape(batch_size, self.num_patches, self.patch_size)
+        return x
+    
     def unpatchify(self, x):
         """
-        x: (N, T, patch_size**2 * C)
-        imgs: (N, H, W, C)
+        Convert patches back to 1D vector.
+        x: (N, num_patches, patch_size) tensor
+        returns: (N, input_size) tensor
         """
-        c = self.out_channels
-        p = self.x_embedder.patch_size[0]
-        h = w = int(x.shape[1] ** 0.5)
-        assert h * w == x.shape[1]
+        batch_size = x.shape[0]
+        x = x.reshape(batch_size, self.input_size)
+        return x
 
-        x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
-        x = torch.einsum('nhwpqc->nchpwq', x)
-        imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
-        return imgs
-
-    def forward(self, x, t, model_params):
+    def forward(self, x, t, conditions):
         """
-        Forward pass of DiT.
-        x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
+        Forward pass of DiT for 1D vectors.
+        x: (N, input_size) tensor of 1D vectors (e.g., shape [batch_size, 712])
         t: (N,) tensor of diffusion timesteps
-        y: (N,) tensor of class labels
         """
-        x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
-        t = self.t_embedder(t)                   # (N, D)
-        model_params = self.model_params_embedder(model_params, self.training)    # (N, D)
-        c = t + model_params                                # (N, D)
+        # Patchify: (N, input_size) -> (N, num_patches, patch_size)
+        x = self.patchify(x)
+        
+        # Embed patches: (N, num_patches, patch_size) -> (N, num_patches, hidden_size)
+        x = self.x_embedder(x)
+        
+        # Add positional embedding
+        x = x + self.pos_embed  # (N, num_patches, hidden_size)
+        
+        # Embed timestep
+        t = self.t_embedder(t)  # (N, hidden_size)
+        
+        # Pass through transformer blocks
         for block in self.blocks:
-            x = block(x, c)                      # (N, T, D)
-        x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
-        x = self.unpatchify(x)                   # (N, out_channels, H, W)
+            x = block(x, t, conditions)  # (N, num_patches, hidden_size)
+        
+        # Final layer to get patches back
+        x = self.final_layer(x, t, conditions)  # (N, num_patches, patch_size)
+        
+        # Unpatchify: (N, num_patches, patch_size) -> (N, input_size)
+        x = self.unpatchify(x)
+        
         return x
