@@ -1,33 +1,55 @@
-import torch, wandb
+import torch, wandb, argparse
 
 from tqdm.auto import tqdm
 from dataclasses import asdict
 from torch.utils.data import DataLoader
 
-from model_utils import batch_to_device, load_model
+from astropt.model import GPT
+
 from embedings_utils import merge_datasets
+from model_utils import batch_to_device, load_model
 
-# Config
-wandb_run = None  # Set to wandb.run to log head training metrics to wandb
+argparser = argparse.ArgumentParser(description="Fine-tune AstroPT model on new tasks.")
+argparser.add_argument("--pretrained_path", type=str, default="model/ckpt.pt",
+                       help="Path to the pretrained model weights.")
+argparser.add_argument("--output_path", type=str, default="model/finetuned_ckpt.pt",
+                       help="Path to save the finetuned model weights.")
+argparser.add_argument("--batch_size", type=int, default=128,
+                       help="Batch size for training.")
+argparser.add_argument("--learning_rate", type=float, default=1e-5,
+                       help="Learning rate for the optimizer.")
+argparser.add_argument("--use_wandb", action="store_true",
+                       help="Whether to log training metrics to Weights & Biases.")
+argparser.add_argument("--num_epochs", type=int, default=60,
+                       help="Number of epochs to train.")
+argparser.add_argument("--label_names", type=str, nargs='+', default=["mass", "label", "BCG_e1", "BCG_e2", "BCG_stellar_conc"],
+                       help="List of label names for the task.")
+args = argparser.parse_args()
 
-# Model weights to start from
-pretrained_path = "model/ckpt.pt"
-# Where to save the finetuned model
-finetuned_path = "model/finetuned_head_2_labels.pt"
-
-batch_size = 16
-learning_rate = 1e-3
-weight_decay = 1e-3
+batch_size = 32
+learning_rate = 1e-5
+weight_decay = 1e-4
 lora_r = 0  # LoRA rank
 betas = (0.9, 0.999)
-num_epochs = 90
-label_names = ["mass", "label"] # "BCG_e1", "BCG_e2", "BCG_stellar_conc", "mass", "label"
+num_epochs = 60
 
 device = torch.device("cuda" if torch.cuda.is_available() else 
                       "mps" if torch.backends.mps.is_available() else 
                       "cpu")
 
-if False:
+# Load pretrained model
+try:
+    model, label_names = load_model(args.pretrained_path, device, get_label_names=True, strict=True)
+except RuntimeError:
+    label_names = args.label_names
+    model = load_model(args.pretrained_path, device, output_dim=len(label_names), strict=True)
+
+assert label_names == args.label_names, \
+        f"Pretrained model was trained on labels {label_names}, " + \
+        f"but fine-tuning was requested on labels {args.label_names}."
+assert isinstance(model, GPT) and model.task_head is not None, "Fine-tuning script only works with GPT models."
+
+if args.use_wandb:
     wandb_run = wandb.init(
         # Set the wandb entity where your project will be logged (generally your team name).
         entity="matttsss-epfl",
@@ -47,6 +69,8 @@ if False:
             "epochs": num_epochs,
         },
     )
+else:
+    wandb_run = None
 
 # Load datasets
 dataset = merge_datasets([
@@ -84,12 +108,9 @@ val_dl = DataLoader(
     shuffle=False
 )
 
-# Load pretrained model
-model = load_model(pretrained_path, device, lora_r=lora_r, output_dim=len(label_names), strict=False)
-
 # Train only the task head predictor
 for param in model.parameters():
-    param.requires_grad = False
+    param.requires_grad = True
 
 # In any case, make sure task head is trainable
 for param in model.task_head.parameters():
@@ -100,7 +121,7 @@ optimizer = model.configure_optimizers(
     weight_decay=weight_decay, learning_rate=learning_rate, 
     betas=betas, device_type=device)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 
-    T_max=num_epochs, eta_min=1e-6, last_epoch=-1)
+    T_max=num_epochs, eta_min=1e-7, last_epoch=-1)
 
 # Training loop
 best_val_loss = float('inf')
@@ -116,11 +137,6 @@ for epoch in range(num_epochs):
         loss.backward()
 
         train_loss += loss.item() / len(train_dl)
-
-            
-    optimizer.step()
-    optimizer.zero_grad()
-    scheduler.step()
 
     model.eval()
     val_loss = 0
@@ -142,6 +158,10 @@ for epoch in range(num_epochs):
             "learning_rate": optimizer.param_groups[0]['lr']
         })
 
+    optimizer.step()
+    optimizer.zero_grad()
+    scheduler.step()
+
     # Save best model
     if val_loss < best_val_loss:
         best_val_loss = val_loss
@@ -150,8 +170,9 @@ for epoch in range(num_epochs):
             'model_args': asdict(model.config),
             'modality_registry': model.modality_registry,
             'val_loss': best_val_loss,
-            'train_loss': train_loss, 
-        }, finetuned_path)
+            'train_loss': train_loss,
+            'target_labels': label_names
+        }, args.output_path)
 
 if wandb_run is not None:
     wandb_run.finish()

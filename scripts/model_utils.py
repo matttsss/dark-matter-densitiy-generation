@@ -2,6 +2,27 @@ import torch
 
 from astropt.model import GPT, GPTConfig
 
+class LinearRegression(torch.nn.Module):
+
+    def __init__(self, device):
+        super().__init__()
+        self.device = device
+        self.W = None
+
+    def fit(self, X, labels):
+        X = torch.cat([torch.ones(X.shape[0], 1, device=self.device), X], dim=1)
+        self.W = (torch.linalg.pinv(X.T @ X) @ X.T @ labels).detach()
+
+        return X @ self.W
+
+    def predict(self, X):
+        if self.W is None:
+            raise ValueError("Model has not been fitted yet.")
+        
+        X = torch.cat([torch.ones(X.shape[0], 1, device=self.device), X], dim=1)
+        return X @ self.W
+    
+
 def load_model(checkpoint_path, device, strict=True, get_label_names = False, **extra_model_config):
     checkpoint = torch.load(checkpoint_path, weights_only=False, map_location=device)
     model_args = checkpoint["model_args"]
