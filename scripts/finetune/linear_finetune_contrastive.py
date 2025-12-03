@@ -1,14 +1,12 @@
 import torch, wandb, argparse
 
-import numpy as np
-
 from tqdm.auto import tqdm
 from dataclasses import asdict
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from embedings_utils import merge_datasets, compute_embeddings
-from model_utils import LinearRegression, batch_to_device, load_model
+from scripts.embedings_utils import merge_datasets, compute_embeddings
+from scripts.model_utils import LinearRegression, batch_to_device, load_model
 
 
 # ==============================
@@ -155,7 +153,7 @@ dataset = merge_datasets([
             "labels": torch.stack(
                 [(torch.log(row[label]) if label == "lensing_norm" else row[label])
                   for label in label_names], dim=0)
-        })
+        }).take(300)
 
 dataset = dataset.train_test_split(test_size=0.3, seed=42)
 train_dataset = dataset['train']
@@ -308,7 +306,6 @@ for epoch in range(num_epochs):
 
     if wandb_run is not None:
         wandb_run.log({
-            "epoch": epoch,
             "val_loss": val_loss,
             "train_loss": train_loss,
             "val_contrastive_loss": val_contrastive_loss,

@@ -1,14 +1,12 @@
 import torch, wandb, argparse
 
-import numpy as np
-
 from tqdm.auto import tqdm
 from dataclasses import asdict
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from embedings_utils import merge_datasets, compute_embeddings
-from model_utils import LinearRegression, batch_to_device, load_model
+from scripts.embedings_utils import merge_datasets, compute_embeddings
+from scripts.model_utils import LinearRegression, batch_to_device, load_model
 
 argparser = argparse.ArgumentParser(description="Fine-tune AstroPT model on new tasks.")
 argparser.add_argument("--pretrained_path", type=str, default="model/ckpt.pt",

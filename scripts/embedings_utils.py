@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 from torch.nn.functional import interpolate
 from datasets import concatenate_datasets, Dataset
 
-from model_utils import batch_to_device
+from scripts.model_utils import batch_to_device
 
 def spiralise(galaxy):
         """

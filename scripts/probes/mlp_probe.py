@@ -14,9 +14,9 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler
 
-from embedings_utils import merge_datasets, batch_to_device
-from plot_utils import plot_labels
-from model_utils import load_model
+from scripts.embedings_utils import merge_datasets, batch_to_device
+from scripts.plot_utils import plot_labels
+from scripts.model_utils import load_model
 
 
 if __name__ == "__main__":
@@ -25,39 +25,34 @@ if __name__ == "__main__":
                     description='Generates plots for linear probe on astroPT embeddings')
     
     parser.add_argument('--nb_points', type=int, default=1000, help='Number of points to use for embeddings')
-    parser.add_argument('--labels', nargs='+', default=["mass"], help='Labels to use for embeddings')
+    parser.add_argument('--model_path', type=str, default="model/ckpt.pt", help='Path to the model checkpoint')
     args = parser.parse_args()
-    
-    labels_name = args.labels    
-    weights_filename = "finetuned_head_2_labels.pt"
-    
-    print("Loading/generating embeddings...")
- 
-    dataset = merge_datasets([
-        "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
-        "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
-        "data/DarkData/BAHAMAS/bahamas_1.pkl",
-        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"]) \
-            .select_columns(["images", "images_positions", *labels_name]) \
-            .shuffle(seed=42) \
-            .take(args.nb_points)
-    
+
     has_metals = torch.backends.mps.is_available()  
     device = torch.device('mps' if has_metals else 
                           'cuda' if torch.cuda.is_available() else 
                           'cpu')
     
     print(f"Generating embeddings on device: {device}")
+    weights_filename = args.model_path
+
+    model, label_names = load_model(checkpoint_path=weights_filename, 
+                       device=device, get_label_names=True, strict=True)
+    model.eval()
+
+     
+    dataset = merge_datasets([
+        "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
+        "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
+        "data/DarkData/BAHAMAS/bahamas_1.pkl",
+        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"]) \
+            .select_columns(["images", "images_positions", *label_names]) \
+            .shuffle(seed=42) \
+            .take(args.nb_points)
 
     # =============================================================================
     # ================== Load model and generate embeddings =======================
     # =============================================================================
-
-    model = load_model(checkpoint_path=f"model/{weights_filename}",
-                       device=device,
-                       lora_rank=32,
-                       output_dim=len(labels_name))
-    model.eval()
 
     dl = DataLoader(
         dataset,
@@ -73,7 +68,7 @@ if __name__ == "__main__":
         for B in tqdm(dl, desc="Generating embeddings"):
             B = batch_to_device(B, device)
 
-            batch_labels = torch.stack([B[label] for label in labels_name], dim=1)
+            batch_labels = torch.stack([B[label] for label in label_names], dim=1)
             head_value = model.generate_embeddings(B, reduction='none')["images"]
             batch_predictions = model.task_head(head_value)
 
@@ -84,15 +79,15 @@ if __name__ == "__main__":
     embeddings = torch.cat(embeddings, dim=0).numpy()
     labels = torch.cat(labels, dim=0).numpy()
     predictions = torch.cat(predictions, dim=0).numpy()
-    labels = {label_name: labels[:, i] for i, label_name in enumerate(labels_name)}
-    predictions = {label_name: predictions[:, i] for i, label_name in enumerate(labels_name)}
+    labels = {label_name: labels[:, i] for i, label_name in enumerate(label_names)}
+    predictions = {label_name: predictions[:, i] for i, label_name in enumerate(label_names)}
 
 
     # =============================================================================
     # ======================== Plot UMAP projections ==============================
     # =============================================================================
 
-    data_name = weights_filename.replace(".pt", "")
+    data_name = weights_filename.replace(".pt", "").split("/")[-1]
     print(f"Plotting probes for {data_name} data...")
 
     umap = UMAP(n_components=2)
@@ -107,7 +102,7 @@ if __name__ == "__main__":
         ax.set_title(label_name)
         fig.colorbar(sc, ax=ax, label=label_name)
 
-    fig = plot_labels(plot_probe, f"UMAP projection of {data_name} embeddings", labels_name,
+    fig = plot_labels(plot_probe, f"UMAP projection of {data_name} embeddings", label_names,
                       umap_embeddings=umap_embeddings, labels_dict=labels)
     
     fig.savefig(f"figures/umap_{data_name}_magnitudes.png", dpi=300)
@@ -149,7 +144,7 @@ if __name__ == "__main__":
 
     
     fig = plot_labels(plot_probe_predictions, f"Normalized linear probe predictions of {data_name} embeddings", 
-                      labels_name, preds_dict=predictions, ref_dict=labels)
+                      label_names, preds_dict=predictions, ref_dict=labels)
     
     fig.savefig(f"figures/{data_name}_pred.png", dpi=300)
     plt.show()
@@ -160,14 +155,35 @@ if __name__ == "__main__":
     # =============================================================================
 
     fig, ax = plt.subplots(figsize=(6,4))
-    unique_cross_sections = np.unique(labels["label"])
+    label_ref = labels["label"]
+    label_preds = predictions["label"]
+    unique_cross_sections = np.unique(label_ref)
     for cross_section in unique_cross_sections:
-        mask = labels["label"] == cross_section
-        ax.hist(predictions["label"][mask], bins=45, alpha=1/len(unique_cross_sections), label=f"Label {cross_section:.3f}")
-    ax.set_xlabel("Mass")
+        mask = label_ref == cross_section
+        predicted_label = label_preds[mask]
+
+        mean = np.mean(predicted_label)
+        std = np.std(predicted_label)
+
+        # plot histogram for the given class
+        n, bins, patches = ax.hist(predicted_label, bins=45, alpha=1/len(unique_cross_sections), 
+                label=f"$\\sigma_{{{cross_section:.2f}}}$: {mean:.2f} ± {std:.2f}")
+        
+        # add vertical line at the mean
+        facecolor = patches[0].get_facecolor()
+        ax.axvline(mean, linestyle="--", color=facecolor)
+
+        # add floating text at the top of the vertical line with the same color
+        ylim = ax.get_ylim()
+        offset = 0.02 * (ylim[1] - ylim[0])
+        y_top = min(n.max() + offset, ylim[1] - offset)
+        ax.text(mean, y_top, f"{mean:.2f}", color=facecolor, ha="left", va="bottom", fontsize=9)
+
+    ax.set_xlabel("Cross-section prediction")
     ax.set_ylabel("Count")
-    ax.set_title(f"Mass distribution for different labels in {data_name} data")
+    ax.set_title(f"Cross-section distribution\nfor different labels in {data_name} model")
     ax.legend()
-    fig.savefig(f"figures/{data_name}_mass_distribution.png", dpi=300)
+
+    fig.savefig(f"figures/{data_name}_cross_section_distribution.png", dpi=300)
     plt.show()
     plt.clf()

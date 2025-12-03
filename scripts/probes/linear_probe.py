@@ -9,9 +9,9 @@ import matplotlib.pyplot as plt
 
 from torch.utils.data import DataLoader
 
-from model_utils import load_model
-from plot_utils import plot_labels
-from embedings_utils import merge_datasets, compute_embeddings
+from scripts.model_utils import load_model
+from scripts.plot_utils import plot_labels
+from scripts.embedings_utils import merge_datasets, compute_embeddings
 
 from umap import UMAP
 from sklearn.preprocessing import StandardScaler
