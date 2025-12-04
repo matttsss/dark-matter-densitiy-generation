@@ -111,20 +111,21 @@ def fetch_dataset(dataset_path: str):
 def merge_datasets(datasets: list[str]) -> Dataset:
     return concatenate_datasets([fetch_dataset(path) for path in datasets])
 
+@torch.no_grad()
 def compute_embeddings(model, dataloader, device: torch.device, label_names: list[str],
                        disable_tqdm: bool = False):
     model.eval()
 
     all_embeddings = []
     all_labels = {label: [] for label in label_names}
-    with torch.no_grad():
-        for B in tqdm(dataloader, disable=disable_tqdm):
-            B = batch_to_device(B, device)
-            embeddings = model.generate_embeddings(B)["images"]
-            all_embeddings.append(embeddings)
+    
+    for B in tqdm(dataloader, disable=disable_tqdm):
+        B = batch_to_device(B, device)
+        embeddings = model.generate_embeddings(B)["images"]
+        all_embeddings.append(embeddings)
 
-            for label in label_names:
-                all_labels[label].append(B[label])
+        for label in label_names:
+            all_labels[label].append(B[label])
 
     all_embeddings = torch.cat(all_embeddings, dim=0)
     all_labels = {label: torch.cat(all_labels[label], dim=0) for label in label_names}
