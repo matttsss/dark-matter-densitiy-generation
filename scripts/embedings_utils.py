@@ -9,7 +9,15 @@ from datasets import concatenate_datasets, Dataset
 from utils import tqdm
 from model_utils import batch_to_device
 
-def fetch_dataset(dataset_path: str):
+def fetch_dataset(dataset_path: str, image_only: bool = False):
+
+    if(image_only):
+        with open(dataset_path, 'rb') as f:
+            metadata, images = pickle.load(f)
+            images = images[:, 0:1, :, :]
+        
+        return Dataset.from_dict({"image": images})
+
 
     cache_file_path = f"cache/{'.'.join(dataset_path.split('/')[-1].split('.')[:-1])}"
 
@@ -68,8 +76,8 @@ def fetch_dataset(dataset_path: str):
   
     return ds
 
-def merge_datasets(datasets: list[str]) -> Dataset:
-    return concatenate_datasets([fetch_dataset(path) for path in datasets])
+def merge_datasets(datasets: list[str], image_only: bool = False) -> Dataset:
+    return concatenate_datasets([fetch_dataset(path, image_only=image_only) for path in datasets])
 
 def compute_embeddings(model, dataloader, device: torch.device, label_names: list[str],
                        disable_tqdm: bool = False):

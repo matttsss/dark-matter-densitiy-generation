@@ -5,34 +5,38 @@ import torch.nn as nn
 from .DiT import DiT
 
 
+
+
 class DDPM(nn.Module):
     """
-    1D DDPM over AstroPT embedding vectors using a DiT noise predictor.
+    DDPM for 2D images with conditioning vectors using DiT noise predictor.
     """
     def __init__(
         self,
-        data_dim=(712,),     # (D,)
-        timesteps: int = 200,
-        beta_start: float = 1e-4,
-        beta_end: float = 0.02,
-        cond_dim: int = 2,   # [mass, label]
-        dit_hidden_size: int = 128,
-        dit_depth: int = 3,
-        dit_heads: int = 4,
+        img_size=100,
+        in_channels=1,
+        timesteps=1000,
+        beta_start=1e-4,
+        beta_end=0.02,
+        cond_dim=712,
+        patch_size=10,
+        hidden_size=512,
+        depth=12,
+        num_heads=8,
     ):
         super().__init__()
-        self.data_dim = data_dim
+        self.img_size = img_size
+        self.in_channels = in_channels
         self.timesteps = timesteps
-
-        embed_dim = data_dim[0]
 
         # Noise predictor eps_θ
         self.eps_model = DiT(
-            input_size=embed_dim,
-            patch_size=4,
-            hidden_size=dit_hidden_size,
-            depth=dit_depth,
-            num_heads=dit_heads,
+            img_size=img_size,
+            patch_size=patch_size,
+            in_channels=in_channels,
+            hidden_size=hidden_size,
+            depth=depth,
+            num_heads=num_heads,
             cond_dim=cond_dim,
         )
 
@@ -65,17 +69,14 @@ class DDPM(nn.Module):
         out = a.gather(0, t)  # (B,)
         return out.view(B, *([1] * (len(x_shape) - 1)))
 
-    def q_sample(self, x_0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor = None) -> torch.Tensor:
+    def q_sample(self, x_0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor):
         """
         Forward diffusion: q(x_t | x_0)
-        x_t = sqrt(ᾱ_t) x_0 + sqrt(1 - ᾱ_t) ε
+        x_t = sqrt(ᾱ_t) x_0 + sqrt(1 - ᾱ_t) ε
         """
-        if noise is None:
-            noise = torch.randn_like(x_0)
 
         sqrt_alphas_cumprod_t = self._extract(self.sqrt_alphas_cumprod, t, x_0.shape)
         sqrt_one_minus_alphas_cumprod_t = self._extract(self.sqrt_one_minus_alphas_cumprod, t, x_0.shape)
-
         return sqrt_alphas_cumprod_t * x_0 + sqrt_one_minus_alphas_cumprod_t * noise
 
     def p_mean(self, x_t: torch.Tensor, t: torch.Tensor, conditions: torch.Tensor) -> torch.Tensor:
@@ -110,20 +111,19 @@ class DDPM(nn.Module):
     @torch.no_grad()
     def sample(self, conditions: torch.Tensor) -> torch.Tensor:
         """
-        Full reverse process:
-          x_T ~ N(0, I)
-          for t = T, ..., 1:
-            x_{t-1} ~ p_θ(x_{t-1} | x_t, cond)
-        conditions: (B, cond_dim)
-        returns:    (B, D)
+        Full reverse process from pure noise to image.
+        
+        Args:
+            conditions: (B, 712) - conditioning vectors
+        Returns:
+            (B, 1, 512, 512) - generated images
         """
         device = conditions.device
         B = conditions.shape[0]
-
-        x = torch.randn(B, *self.data_dim, device=device)
-
+        x = torch.randn(B, self.in_channels, self.img_size, self.img_size, device=device)
+        
         for t_idx in reversed(range(self.timesteps)):
             t = torch.full((B,), t_idx, dtype=torch.long, device=device)
             x = self.p_sample(x, t, conditions)
-
+        
         return x
