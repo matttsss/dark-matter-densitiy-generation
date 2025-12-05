@@ -1,27 +1,45 @@
 import torch
-
+import torch.nn.functional as F
 from astropt.model import GPT, GPTConfig
 
-class LinearRegression(torch.nn.Module):
+class LinearRegression:
 
-    def __init__(self, device):
+    def __init__(self, device="cpu"):
         super().__init__()
         self.device = device
-        self.W = None
+        self.weights = None
+        self.bias = None
 
-    def fit(self, X, labels):
-        X = torch.cat([torch.ones(X.shape[0], 1, device=self.device), X], dim=1)
-        self.W = (torch.linalg.pinv(X.T @ X) @ X.T @ labels).detach()
+    @staticmethod
+    def _append_bias(X):
+        return torch.cat([torch.ones(X.shape[0], 1, device=X.device), X], dim=1)
 
-        return X @ self.W
+    @torch.no_grad()
+    def fit(self, X, labels):        
+        # Ensure labels is 2D (num_samples, num_outputs)
+        if labels.dim() == 1:
+            labels = labels.unsqueeze(1)
+
+        new_X = LinearRegression._append_bias(X)
+        W = (torch.linalg.pinv(new_X.T @ new_X) @ new_X.T @ labels)
+
+        self.weights = W[1:].T
+        self.bias = W[0]
+
+        return self
 
     def predict(self, X):
-        if self.W is None:
-            raise ValueError("Model has not been fitted yet.")
-        
-        X = torch.cat([torch.ones(X.shape[0], 1, device=self.device), X], dim=1)
-        return X @ self.W
+        X = torch.as_tensor(X, device=self.device)
+        if self.weights is None: raise ValueError("Model has not been fitted yet.")
+        return F.linear(X, self.weights, self.bias)
     
+    def sample(self, labels):
+        if self.weights is None: raise ValueError("Model has not been fitted yet.")
+
+        print(self.weights.shape, (labels - self.bias).shape)
+
+        res = torch.linalg.lstsq(self.weights.cpu(), (labels - self.bias).T.cpu(), driver='gelsy')
+        return res.solution.to(self.device)    
 
 def load_model(checkpoint_path, device, strict=True, get_label_names = False, **extra_model_config):
     checkpoint = torch.load(checkpoint_path, weights_only=False, map_location=device)
