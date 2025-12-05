@@ -1,5 +1,12 @@
-import argparse
+"""
+Trains a flow matching model on astroPT embeddings.
 
+python3 -m scripts.train_generator \
+    --model_path <astropt_model_path> \
+    --nb_points 14000 --epochs 5000 --sigma 1.0
+"""
+
+import argparse
 import numpy as np
 
 import torch
@@ -18,22 +25,30 @@ from scripts.embedings_utils import merge_datasets, compute_embeddings
 
 @dataclass
 class VectorFieldConfig:
-    sigma: float = 0.001
+    sigma: float = 1.0
     dim: int = 128
-    nb_conditions: int = 2
+    encoding_size: int = 64
     hidden: int = 512
     conditions: list[str] = field(default_factory=list)
 
-class VectorField(nn.Module, ExactOptimalTransportConditionalFlowMatcher):
+class VectorField(nn.Module, TargetConditionalFlowMatcher):
+    
     def __init__(self, config: VectorFieldConfig):
         nn.Module.__init__(self)
-        ExactOptimalTransportConditionalFlowMatcher.__init__(self, config.sigma)
+        TargetConditionalFlowMatcher.__init__(self, config.sigma)
     
         self.config = config
         self.ot_sampler = OTPlanSampler("exact", num_threads="max")
+
+        self.encoding_net = nn.Sequential(
+            nn.Linear(len(config.conditions), config.encoding_size//2),
+            nn.SiLU(),
+            nn.Linear(config.encoding_size//2, config.encoding_size),
+            nn.SiLU()
+        )
     
         self.net = nn.Sequential(
-            nn.Linear(config.dim + config.nb_conditions + 1, config.hidden),
+            nn.Linear(config.dim + config.encoding_size + 1, config.hidden),
             nn.SiLU(),
             nn.Linear(config.hidden, config.hidden),
             nn.SiLU(),
@@ -45,14 +60,15 @@ class VectorField(nn.Module, ExactOptimalTransportConditionalFlowMatcher):
         self._init_weights()
 
     def _init_weights(self):
-        for m in self.net.modules():
+        for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain('relu'))
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
     def forward(self, x, cond, t):
-        return self.net(torch.cat([x, cond, t], dim=-1))
+        encoding = self.encoding_net(cond)
+        return self.net(torch.cat([x, encoding, t], dim=-1))
 
 
     def compute_loss(self, x0, x1, cond):
@@ -82,7 +98,9 @@ def sample_flow(v_theta: VectorField, cond, steps=100):
 
 def train_flow_matching(
         train_embed_dl: DataLoader, val_embed_dl: DataLoader, 
-        device, vf_config: VectorFieldConfig, epochs=10, lr=1e-3):
+        device, vf_config: VectorFieldConfig, 
+        model_name,
+        epochs=10, lr=1e-3):
     
     v_theta = VectorField(vf_config).to(device)
     opt = torch.optim.AdamW(v_theta.parameters(), lr=lr)
@@ -96,10 +114,9 @@ def train_flow_matching(
             x1 = x1.to(device).view(x1.size(0), -1)
             cond = cond.to(device).view(cond.size(0), -1)
 
-            # source distribution = standard Gaussian
             x0 = torch.randn_like(x1)
-
             loss = v_theta.compute_loss(x0, x1, cond)
+
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -133,7 +150,7 @@ def train_flow_matching(
                         "config": asdict(vf_config),
                         "conditions": vf_config.conditions
                     }, 
-                    "model/flow_matching/best_fm_model.pt")
+                    f"model/flow_matching/{model_name}.pt")
 
     return v_theta, epoch_train_losses, epoch_val_losses
 
@@ -163,6 +180,10 @@ if __name__ == "__main__":
                           'cpu')
     
     print(f"Generating embeddings on device: {device}")
+
+    model_name = args.model_path.split('/')[-1].replace('.pt','')
+    sigma_name = f"sigma_{args.sigma:.3f}".replace('.','_')
+
     model = load_model(args.model_path, device=device, strict=True)
     dataset = merge_datasets([
         "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
@@ -193,14 +214,14 @@ if __name__ == "__main__":
     vf_config = VectorFieldConfig(
         sigma=args.sigma,
         dim=embeddings.size(-1),
-        nb_conditions=cond.size(-1),
         hidden=512,
         conditions=args.labels
     )
 
     v_theta, epoch_train_losses, epoch_val_losses = \
         train_flow_matching(train_embed_dl, val_embed_dl, device, vf_config,
-                                  epochs=args.epochs, lr=5e-4)
+                            model_name=f"fm_{model_name}_{sigma_name}",
+                            epochs=args.epochs, lr=1e-4)
     
     # ==============================================
     # Plot training curves
@@ -233,8 +254,12 @@ if __name__ == "__main__":
     ground_truth = {k: v.cpu().numpy() for k, v in cond_dict.items()}
 
     fig, axs = plt.subplots(2, 2, figsize=(12, 12))
+
+    rel_diff = np.abs(lin_preds["mass"] - ground_truth["mass"]) / np.abs(ground_truth["mass"])
     axs[0,0].scatter(ground_truth["mass"], lin_preds["mass"], alpha=0.1, label='Linear Regression Predictions')
-    axs[0,0].scatter(ground_truth["mass"], vf_preds["mass"], alpha=0.1, label='Flow Matching Predictions')
+    res = axs[0,0].scatter(ground_truth["mass"], vf_preds["mass"], alpha=0.1, 
+                     c=rel_diff, label='Flow Matching Predictions')
+    fig.colorbar(res, ax=axs[0,0], label='Relative Difference')
 
     axs[0,0].set_title(f"Predictions for mass")
     axs[0,0].set_xlabel(f"Ground truth mass")
@@ -247,13 +272,13 @@ if __name__ == "__main__":
     plot_cross_section_histogram(axs[1, 1], ground_truth["label"], vf_preds["label"], "FM embeddings")
 
     fig.tight_layout()
-    fig.savefig(f"figures/flow_matching/fmsigma_{args.sigma:.3f}_predictions.png", dpi=300)
+    fig.savefig(f"figures/flow_matching/{model_name}_{sigma_name}_predictions.png", dpi=300)
     plt.show()
     plt.close()
 
     fig = umap_compare(vf_preds_embeddings[train_nb:], embeddings[train_nb:], {
         k: ground_truth[k][train_nb:] for k in ground_truth
     })
-    fig.savefig(f"figures/flow_matching/fmsigma_{args.sigma:.3f}_umap_embeddings.png", dpi=300)
+    fig.savefig(f"figures/flow_matching/{model_name}_{sigma_name}_umap.png", dpi=300)
     plt.show()
     plt.close()
