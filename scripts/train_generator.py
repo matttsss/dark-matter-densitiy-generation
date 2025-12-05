@@ -5,23 +5,12 @@ python3 -m scripts.train_generator \
     --model_path <astropt_model_path> \
     --nb_points 14000 --epochs 5000 --sigma 1.0
 """
-
-import argparse
-import numpy as np
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from dataclasses import dataclass, asdict, field
 from torchcfm.conditional_flow_matching import *
-
-import matplotlib.pyplot as plt
-from torch.utils.data import DataLoader, TensorDataset
-
-from scripts.model_utils import load_model
-from scripts.plot_utils import plot_cross_section_histogram
-from scripts.embedings_utils import merge_datasets, compute_embeddings
 
 @dataclass
 class VectorFieldConfig:
@@ -38,8 +27,6 @@ class VectorField(nn.Module, TargetConditionalFlowMatcher):
         TargetConditionalFlowMatcher.__init__(self, config.sigma)
     
         self.config = config
-        self.ot_sampler = OTPlanSampler("exact", num_threads="max")
-
         self.encoding_net = nn.Sequential(
             nn.Linear(len(config.conditions), config.encoding_size//2),
             nn.SiLU(),
@@ -95,75 +82,16 @@ def sample_flow(v_theta: VectorField, cond, steps=100):
     return x
 
 
-
-def train_flow_matching(
-        train_embed_dl: DataLoader, val_embed_dl: DataLoader, 
-        device, vf_config: VectorFieldConfig, 
-        model_name,
-        epochs=10, lr=1e-3):
-    
-    v_theta = VectorField(vf_config).to(device)
-    opt = torch.optim.AdamW(v_theta.parameters(), lr=lr)
-
-    best_val_loss = float('inf')
-    epoch_val_losses = []
-    epoch_train_losses = []
-    for epoch in range(epochs):
-        train_loss = 0.0
-        for x1, cond in train_embed_dl:
-            x1 = x1.to(device).view(x1.size(0), -1)
-            cond = cond.to(device).view(cond.size(0), -1)
-
-            x0 = torch.randn_like(x1)
-            loss = v_theta.compute_loss(x0, x1, cond)
-
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-                
-            train_loss += loss.item()
-
-        train_loss /= len(train_embed_dl)
-
-        val_loss = 0.0
-        for x1, cond in val_embed_dl:
-            x1 = x1.to(device).view(x1.size(0), -1)
-            cond = cond.to(device).view(cond.size(0), -1)
-
-            x0 = torch.randn_like(x1)
-            loss = v_theta.compute_loss(x0, x1, cond)
-
-            val_loss += loss.item()
-
-        val_loss /= len(val_embed_dl)
-        
-        epoch_train_losses.append(train_loss)
-        epoch_val_losses.append(val_loss)
-
-        if (epoch + 1) % 10 == 0 or epoch == 0:
-            print(f"Epoch {epoch+1}: train_loss: {train_loss:.4f}, val_loss: {val_loss:.4f}")
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                torch.save({
-                        "state_dict": v_theta.state_dict(),
-                        "config": asdict(vf_config),
-                        "conditions": vf_config.conditions
-                    }, 
-                    f"model/flow_matching/{model_name}.pt")
-
-    return v_theta, epoch_train_losses, epoch_val_losses
-
-
-# ----------------------------------------------------
-# Example Usage (pseudo-code)
-# ----------------------------------------------------
 if __name__ == "__main__":
-    from .probes.validate_fm_model import predict_fm_model, umap_compare
+    import numpy as np
+    import argparse, wandb
+    import matplotlib.pyplot as plt
+    from torch.utils.data import DataLoader, TensorDataset
 
-    device = ("mps" if torch.backends.mps.is_available() else 
-              "cuda" if torch.cuda.is_available() else 
-              "cpu")
+    from scripts.model_utils import LinearRegression, load_model
+    from scripts.plot_utils import plot_cross_section_histogram
+    from scripts.embedings_utils import merge_datasets, compute_embeddings
+
     parser = argparse.ArgumentParser(
                     prog='GenAstroPT',
                     description='Trains a flow matching model on astroPT embeddings')
@@ -172,6 +100,8 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, default="model/ckpt.pt", help='Path to the astropt checkpoint')
     parser.add_argument('--epochs', type=int, default=250, help='Number of training epochs')
     parser.add_argument('--sigma', type=float, default=0.01, help='Sigma value for the flow matching model')
+
+    parser.add_argument('--use_wandb', action='store_true', help='Whether to use wandb for logging')
     args = parser.parse_args()
     
     has_metals = torch.backends.mps.is_available()  
@@ -183,6 +113,22 @@ if __name__ == "__main__":
 
     model_name = args.model_path.split('/')[-1].replace('.pt','')
     sigma_name = f"sigma_{args.sigma:.3f}".replace('.','_')
+
+    wandb_run = None
+    if args.use_wandb:
+        wandb_run = wandb.init(
+            entity="matttsss-epfl",
+            project="Embedding Generation FM",
+            name=f"Sigma: {args.sigma:.3f}",
+            config={
+                "epochs": args.epochs,
+                "nb_points": args.nb_points,
+                "conditions": args.labels,
+                "sigma": args.sigma,
+                "astropt_model": model_name
+            }
+        )
+    
 
     model = load_model(args.model_path, device=device, strict=True)
     dataset = merge_datasets([
@@ -203,82 +149,141 @@ if __name__ == "__main__":
 
     embeddings, cond_dict = compute_embeddings(model, dl, device, args.labels)
     cond = torch.stack([cond_dict[k] for k in args.labels], dim=-1)
+    nb_embeddings = embeddings.size(0)
+    embeddings_dim = embeddings.size(-1)
 
     # Split into train and val
-    nb_train = int(0.8 * embeddings.size(0))
-    train_embed_dl = DataLoader(TensorDataset(embeddings[:nb_train], cond[:nb_train]), 
-                                batch_size=nb_train)
-    val_embed_dl = DataLoader(TensorDataset(embeddings[nb_train:], cond[nb_train:]), 
-                              batch_size=embeddings.size(0) - nb_train)
+    nb_train = int(0.8 * nb_embeddings)
+    print(f"Training flow matching model on {nb_train} embeddings of dimension {embeddings_dim}.")
+    print(f"Validation on {nb_embeddings - nb_train} embeddings.")
 
-    vf_config = VectorFieldConfig(
+    train_embeddings = embeddings[:nb_train]
+    val_embeddings = embeddings[nb_train:]
+    train_cond = cond[:nb_train]
+    val_cond = cond[nb_train:]
+
+    del embeddings, cond, cond_dict
+
+    train_embed_dl = DataLoader(TensorDataset(train_embeddings, train_cond), 
+                                batch_size=nb_train)
+    val_embed_dl = DataLoader(TensorDataset(val_embeddings, val_cond), 
+                              batch_size=nb_embeddings - nb_train)
+    
+    fm_config = VectorFieldConfig(
         sigma=args.sigma,
-        dim=embeddings.size(-1),
+        dim=embeddings_dim,
         hidden=512,
         conditions=args.labels
     )
+    fm_model = VectorField(fm_config).to(device)
+    opt = torch.optim.AdamW(fm_model.parameters(), lr=1e-4)
 
-    v_theta, epoch_train_losses, epoch_val_losses = \
-        train_flow_matching(train_embed_dl, val_embed_dl, device, vf_config,
-                            model_name=f"fm_{model_name}_{sigma_name}",
-                            epochs=args.epochs, lr=1e-4)
+    best_val_loss = float('inf')
+    epoch_val_losses = []
+    epoch_train_losses = []
+    for epoch in range(args.epochs):
+        train_loss = 0.0
+        for x1, cond in train_embed_dl:
+            x1 = x1.to(device).view(x1.size(0), -1)
+            cond = cond.to(device).view(cond.size(0), -1)
+
+            x0 = torch.randn_like(x1)
+            loss = fm_model.compute_loss(x0, x1, cond)
+
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+                
+            train_loss += loss.item()
+
+        train_loss /= len(train_embed_dl)
+
+        val_loss = 0.0
+        for x1, cond in val_embed_dl:
+            x1 = x1.to(device).view(x1.size(0), -1)
+            cond = cond.to(device).view(cond.size(0), -1)
+
+            x0 = torch.randn_like(x1)
+            loss = fm_model.compute_loss(x0, x1, cond)
+
+            val_loss += loss.item()
+
+        val_loss /= len(val_embed_dl)
+        
+        epoch_train_losses.append(train_loss)
+        epoch_val_losses.append(val_loss)
+
+        if epoch % 10 == 0:
+            if wandb_run is not None:
+                wandb_run.log({
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                })
+            else:
+                print(f"Epoch {epoch}: train_loss: {train_loss:.4f}, val_loss: {val_loss:.4f}")
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                torch.save({
+                        "state_dict": fm_model.state_dict(),
+                        "config": asdict(fm_config),
+                        "conditions": fm_config.conditions
+                    }, 
+                    f"model/flow_matching/{model_name}.pt")
     
     # ==============================================
     # Plot training curves
     # ==============================================
 
-    cutoff = args.epochs//10
-    x = range(cutoff, args.epochs)
-    epoch_train_losses = epoch_train_losses[cutoff:]
-    epoch_val_losses = epoch_val_losses[cutoff:]
+    lin_reg = LinearRegression(device).fit(train_embeddings, train_cond)
+    lin_preds = lin_reg.predict(val_embeddings).cpu().numpy()
 
-    plt.plot(x, epoch_train_losses, label='Train Loss')
-    plt.plot(x, epoch_val_losses, label='Validation Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Flow Matching Training and Validation Loss')
-    plt.legend()
-    plt.savefig('figures/flow_matching/loss_curve.png')
-    plt.show()
-    plt.close()
+    vf_embeddings = sample_flow(fm_model, val_cond, steps=int(1e4))
+    vf_preds = lin_reg.predict(vf_embeddings).cpu().numpy()
 
-    train_ratio = 0.8
-    train_nb = int(train_ratio * embeddings.shape[0])
-    vf_preds_embeddings, vf_preds, lin_preds = \
-        predict_fm_model(v_theta, embeddings, cond_dict, args.labels, args.labels, train_ratio=train_ratio)
+    lin_preds = {label_name: lin_preds[:, i] for i, label_name in enumerate(fm_model.config.conditions)}
+    vf_preds = {cond_name: vf_preds[:, i] for i, cond_name in enumerate(fm_model.config.conditions)}
+    val_cond = {label_name: val_cond[:, i].cpu().numpy() for i, label_name in enumerate(fm_model.config.conditions)}
+
+
+    for cond_name in filter(lambda x: "label" not in x, args.labels):
+        fig, (lin_ax, fm_ax) = plt.subplots(1, 2, figsize=(12, 6))
+
+        rel_diff = np.abs(lin_preds[cond_name] - val_cond[cond_name]) / np.maximum(np.abs(val_cond[cond_name]), 1e-6)
+
+        lin_ax.scatter(val_cond[cond_name], lin_preds[cond_name], alpha=0.1)
+        lin_ax.set_title(f"Linear Regression Predictions for {cond_name}")
+        lin_ax.set_xlabel(f"Ground truth {cond_name}")
+        lin_ax.set_ylabel(f"Predicted {cond_name}")
+
+        fm_ax.scatter(val_cond[cond_name], vf_preds[cond_name], alpha=0.1)
+        fm_ax.set_title(f"Flow Matching Predictions for {cond_name}")
+        fm_ax.set_xlabel(f"Ground truth {cond_name}")
+        fm_ax.set_ylabel(f"Predicted {cond_name}")
+
+        fig.tight_layout()
+
+        if wandb_run is not None:
+            wandb_run.log({f"{cond_name}_predictions": wandb.Image(fig)})
+        else:
+            fig.savefig(f"figures/{model_name}_{sigma_name}_{cond_name}_predictions.png", dpi=300)
+        
+        plt.close(fig)
     
-    embeddings = embeddings.cpu().numpy()
-    vf_preds_embeddings = vf_preds_embeddings.cpu().numpy()
-    lin_preds = {k: v.cpu().numpy() for k, v in lin_preds.items()}
-    vf_preds = {k: v.cpu().numpy() for k, v in vf_preds.items()}
-    ground_truth = {k: v.cpu().numpy() for k, v in cond_dict.items()}
+    if "label" in args.labels:
+        fig, (lin_ax, fm_ax) = plt.subplots(1, 2, figsize=(12, 6))
 
-    fig, axs = plt.subplots(2, 2, figsize=(12, 12))
-
-    rel_diff = np.abs(lin_preds["mass"] - ground_truth["mass"]) / np.abs(ground_truth["mass"])
-    axs[0,0].scatter(ground_truth["mass"], lin_preds["mass"], alpha=0.1, label='Linear Regression Predictions')
-    res = axs[0,0].scatter(ground_truth["mass"], vf_preds["mass"], alpha=0.1, 
-                     c=rel_diff, label='Flow Matching Predictions')
-    fig.colorbar(res, ax=axs[0,0], label='Relative Difference')
-
-    axs[0,0].set_title(f"Predictions for mass")
-    axs[0,0].set_xlabel(f"Ground truth mass")
-    axs[0,0].set_ylabel(f"Predicted mass")
-    axs[0,0].legend()
-
-    fig.delaxes(axs[0,1])
-
-    plot_cross_section_histogram(axs[1, 0], ground_truth["label"], lin_preds["label"], "reference embeddings")
-    plot_cross_section_histogram(axs[1, 1], ground_truth["label"], vf_preds["label"], "FM embeddings")
-
-    fig.tight_layout()
-    fig.savefig(f"figures/flow_matching/{model_name}_{sigma_name}_predictions.png", dpi=300)
-    plt.show()
-    plt.close()
-
-    fig = umap_compare(vf_preds_embeddings[train_nb:], embeddings[train_nb:], {
-        k: ground_truth[k][train_nb:] for k in ground_truth
-    })
-    fig.savefig(f"figures/flow_matching/{model_name}_{sigma_name}_umap.png", dpi=300)
-    plt.show()
-    plt.close()
+        plot_cross_section_histogram(lin_ax,
+            val_cond["label"], lin_preds["label"], 
+            pred_method_name="Linear Regression")
+        
+        plot_cross_section_histogram(fm_ax,
+            val_cond["label"], vf_preds["label"], 
+            pred_method_name="Flow Matching + Linear Regression")
+        
+        if wandb_run is not None:
+            wandb_run.log({f"label_predictions": wandb.Image(fig)})
+        else:
+            fig.savefig(f"figures/{model_name}_{sigma_name}_label_predictions.png", dpi=300)
+        
+        plt.close(fig)
