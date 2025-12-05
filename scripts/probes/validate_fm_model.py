@@ -22,7 +22,7 @@ def predict_fm_model(fm_model, embeddings, labels, cond_names, label_names, trai
 
     vf_embeddings = sample_flow(fm_model, cond, steps=500)
     vf_preds = lin_reg.predict(vf_embeddings)
-    vf_preds = {cond_name: vf_preds[:, i] for i, cond_name in enumerate(cond_names)}
+    vf_preds = {cond_name: vf_preds[:, i] for i, cond_name in enumerate(label_names)}
 
     return vf_embeddings, vf_preds, lin_preds
 
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     astropt_model.eval()
 
     # =============== Load datasets ===================
-    merged_labels = list(set(fm_config.conditions) | set(args.labels))
+    merged_labels = fm_config.conditions + [label_name for label_name in args.labels if label_name not in fm_config.conditions]
     dataset = merge_datasets([
         "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
         "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
@@ -106,6 +106,7 @@ if __name__ == "__main__":
     embeddings = embeddings.cpu().numpy()
     ground_truth = {k: labels[k].cpu().numpy() for k in args.labels}
     lin_preds = {k: lin_preds[k].cpu().numpy() for k in args.labels}
+    vf_preds = {k: vf_preds[k].cpu().numpy() for k in args.labels}
 
 
     def plot_func(fig, ax, label_name):
@@ -116,9 +117,10 @@ if __name__ == "__main__":
                        c=rel_diff, alpha=0.1, label='Flow Matching Predictions')
         
         fig.colorbar(z, ax=ax, label='Prediction Difference Norm')
+        ax.set_title(f"Predictions for {label_name}")
 
     fig = plot_labels(plot_func, "Flow Matching vs Linear Regression Predictions", args.labels)
-    fig.savefig("figures/flow_matching/fm_predictions.png", dpi=300)
+    fig.savefig("figures/fm_predictions.png", dpi=300)
     fig.show()
     plt.close()
 
