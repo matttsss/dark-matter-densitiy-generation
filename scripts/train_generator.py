@@ -25,12 +25,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
                     prog='GenAstroPT',
                     description='Trains a flow matching model on astroPT embeddings')
-    parser.add_argument('--nb_points', type=int, default=1000, help='Number of points to use for embeddings')
+    parser.add_argument('--nb_points', type=int, default=7000, help='Number of points to use for embeddings')
     parser.add_argument('--labels', nargs='+', default=["mass", "label"], help='Labels to use for the conditions of the flow matching model')
     parser.add_argument('--model_path', type=str, default="model/ckpt.pt", help='Path to the astropt checkpoint')
-    parser.add_argument('--epochs', type=int, default=250, help='Number of training epochs')
-    parser.add_argument('--sigma', type=float, default=0.01, help='Sigma value for the flow matching model')
+    parser.add_argument('--epochs', type=int, default=3000, help='Number of training epochs')
+    
+    parser.add_argument('--sigma', type=float, default=0.1, help='Sigma value for the flow matching model')
+    parser.add_argument('--ot_method', type=str, default="default", help='Optimal transport method to use')
 
+    parser.add_argument('--save_plots', action='store_true', help='Whether to save plots locally')
     parser.add_argument('--use_wandb', action='store_true', help='Whether to use wandb for logging')
     args = parser.parse_args()
     
@@ -45,6 +48,7 @@ if __name__ == "__main__":
 
     model_name = args.model_path.split('/')[-1].replace('.pt','')
     sigma_name = f"sigma_{args.sigma:.3f}".replace('.','_')
+    checkpoint_path = f"model/flow_matching/{args.ot_method}_{sigma_name}_{model_name}.pt"
 
     # ==============================================
     # Setup Wandb
@@ -55,12 +59,13 @@ if __name__ == "__main__":
         wandb_run = wandb.init(
             entity="matttsss-epfl",
             project="Embedding Generation FM",
-            name=f"Sigma: {args.sigma:.3f}",
+            name=f"OT Method: {args.ot_method}, Sigma: {args.sigma:.3f}",
             config={
                 "epochs": args.epochs,
                 "nb_points": args.nb_points,
                 "conditions": args.labels,
                 "sigma": args.sigma,
+                "ot_method": args.ot_method,
                 "astropt_model": model_name
             }
         )
@@ -116,14 +121,13 @@ if __name__ == "__main__":
         sigma=args.sigma,
         dim=embeddings_dim,
         hidden=512,
+        ot_method=args.ot_method,
         conditions=args.labels
     )
-    fm_model = VectorField(fm_config).to(device)
+    fm_model = VectorField(fm_config, num_threads=4).to(device)
     opt = torch.optim.AdamW(fm_model.parameters(), lr=1e-4)
 
     best_val_loss = float('inf')
-    epoch_val_losses = []
-    epoch_train_losses = []
     for epoch in range(args.epochs):
         train_loss = 0.0
         for x1, cond in train_embed_dl:
@@ -153,9 +157,6 @@ if __name__ == "__main__":
 
         val_loss /= len(val_embed_dl)
         
-        epoch_train_losses.append(train_loss)
-        epoch_val_losses.append(val_loss)
-
         if epoch % 10 == 0:
             if wandb_run is not None:
                 wandb_run.log({
@@ -170,10 +171,12 @@ if __name__ == "__main__":
                 torch.save({
                         "state_dict": fm_model.state_dict(),
                         "config": asdict(fm_config),
-                        "conditions": fm_config.conditions
-                    }, 
-                    f"model/flow_matching/{model_name}.pt")
+                        "conditions": fm_config.conditions,
+                        "val_loss": best_val_loss
+                    }, checkpoint_path)
     
+    print(f"Training completed. Best val loss: {best_val_loss:.4f}\n\n")
+
     # ==============================================
     # Make predictions for plots
     # ==============================================
@@ -193,9 +196,11 @@ if __name__ == "__main__":
     # Plot predictions (except for cross sections)
     # ==============================================
 
-    plot_folder = f"figures/flow_matching/{sigma_name}_{model_name}/"
+    plot_folder = f"figures/flow_matching/{args.ot_method}/{sigma_name}_{model_name}"
     if wandb_run is None: os.makedirs(plot_folder, exist_ok=True)
 
+    metrics = {}
+    
     for cond_name in filter(lambda x: "label" not in x, args.labels):
         fig, (lin_ax, fm_ax) = plt.subplots(1, 2, figsize=(12, 6))
 
@@ -203,30 +208,40 @@ if __name__ == "__main__":
         slope = lin_reg.weights.item()
         intercept = lin_reg.bias.item()
 
+        mse = np.mean((lin_preds[cond_name] - val_cond[cond_name])**2)
+        r2 = 1 - np.sum((lin_preds[cond_name] - val_cond[cond_name])**2) / np.sum((val_cond[cond_name] - np.mean(val_cond[cond_name]))**2)
+
         lin_ax.scatter(val_cond[cond_name], lin_preds[cond_name], alpha=0.3)
         lin_ax.plot(val_cond[cond_name], val_cond[cond_name] * slope + intercept, 
                     label=f"y={slope:.2f}x + {intercept:.2f}", color='red')
         
-        lin_ax.set_title(f"Linear Regression Predictions for {cond_name}")
+        lin_ax.set_title(f"Val embeddings predictions for {cond_name}\nMSE: {mse:.4f}, R2: {r2:.4f}")
         lin_ax.set_xlabel(f"Ground truth {cond_name}")
         lin_ax.set_ylabel(f"Predicted {cond_name}")
         lin_ax.legend()
 
         rel_diff = np.abs(lin_preds[cond_name] - val_cond[cond_name]) / np.maximum(np.abs(val_cond[cond_name]), 1e-6)
+        mse = np.mean((vf_preds[cond_name] - val_cond[cond_name])**2)
+        r2 = 1 - np.sum((vf_preds[cond_name] - val_cond[cond_name])**2) / np.sum((val_cond[cond_name] - np.mean(val_cond[cond_name]))**2)
+
         ax_col = fm_ax.scatter(val_cond[cond_name], vf_preds[cond_name], c=rel_diff, alpha=0.3)
         cbar = fig.colorbar(ax_col, ax=fm_ax, label='Relative difference')
         fm_ax.plot(val_cond[cond_name], val_cond[cond_name] * slope + intercept, color='red')
 
-        fm_ax.set_title(f"Flow Matching Predictions for {cond_name}")
+        fm_ax.set_title(f"Predictions with FM embeddings for {cond_name} \nMSE: {mse:.4f}, R2: {r2:.4f}")
         fm_ax.set_xlabel(f"Ground truth {cond_name}")
         fm_ax.set_ylabel(f"Predicted {cond_name}")
 
         fig.tight_layout()
 
+        metrics[f"{cond_name}_mse"] = mse
+        metrics[f"{cond_name}_r2"] = r2
+
         if wandb_run is not None:
             wandb_run.log({f"{cond_name}_predictions": wandb.Image(fig)})
-        else:
+        if args.save_plots or wandb_run is None:
             fig.savefig(f"{plot_folder}/{cond_name}_predictions.png", dpi=300)
+            print(f"Saved plot for {cond_name} predictions.")
         
         plt.close(fig)
     
@@ -236,6 +251,9 @@ if __name__ == "__main__":
 
     if "label" in args.labels:
         fig, (lin_ax, fm_ax) = plt.subplots(1, 2, figsize=(12, 6))
+
+        mse = np.mean((lin_preds["label"] - val_cond["label"])**2)
+        r2 = 1 - np.sum((lin_preds["label"] - val_cond["label"])**2) / np.sum((val_cond["label"] - np.mean(val_cond["label"]))**2)
 
         plot_cross_section_histogram(lin_ax,
             val_cond["label"], lin_preds["label"], 
@@ -247,11 +265,14 @@ if __name__ == "__main__":
         
         if wandb_run is not None:
             wandb_run.log({f"label_predictions": wandb.Image(fig)})
-        else:
+        if args.save_plots or wandb_run is None:
             fig.savefig(f"{plot_folder}/label_predictions.png", dpi=300)
+            print("Saved plot for label predictions.")
         
         plt.close(fig)
 
+        metrics["label_mse"] = mse
+        metrics["label_r2"] = r2
 
     # ==============================================
     # Plot UMAP projections of embeddings
@@ -273,7 +294,18 @@ if __name__ == "__main__":
     fig.tight_layout()
     if wandb_run is not None:
         wandb_run.log({f"umap_embeddings": wandb.Image(fig)})
-    else:
+    if args.save_plots or wandb_run is None:
         fig.savefig(f"{plot_folder}/umap_embeddings.png", dpi=300)
+        print("Saved plot for UMAP embeddings.")
 
     plt.close(fig)
+
+    checkpoint = torch.load(checkpoint_path, weights_only=False, map_location='cpu')
+    checkpoint["metrics"] = metrics
+    torch.save(checkpoint, checkpoint_path)
+    print("Saved metrics to checkpoint.")
+
+    if wandb_run is not None:
+        for metric_name, metric_vals in metrics.items():
+            wandb_run.summary[metric_name] = metric_vals
+        wandb_run.finish()

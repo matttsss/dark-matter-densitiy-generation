@@ -57,14 +57,32 @@ class VectorFieldConfig:
     sigma: float = 1.0
     dim: int = 128
     encoding_size: int = 64
-    hidden: int = 512
+    hidden: int = 512,
+    ot_method: str = "default"
     conditions: list[str] = field(default_factory=list)
 
-class VectorField(nn.Module, TargetConditionalFlowMatcher):
+class VectorField(nn.Module):
     
-    def __init__(self, config: VectorFieldConfig):
+    def __init__(self, config: VectorFieldConfig, num_threads: int = 4):
         nn.Module.__init__(self)
-        TargetConditionalFlowMatcher.__init__(self, config.sigma)
+
+        match config.ot_method:
+            case "default":
+                self.solver = ConditionalFlowMatcher(config.sigma)
+            case "target":
+                self.solver = TargetConditionalFlowMatcher(config.sigma)
+            case "variance_preserving":
+                self.solver = VariancePreservingConditionalFlowMatcher(config.sigma)
+            case "exact":
+                self.solver = ExactOptimalTransportConditionalFlowMatcher(config.sigma)
+                self.solver.ot_sampler = OTPlanSampler("exact", num_threads=num_threads)
+            case "schrodinger":
+                self.solver = SchrodingerBridgeConditionalFlowMatcher(config.sigma)
+                self.solver.ot_sampler = OTPlanSampler(method=config.ot_method, 
+                                                       reg=2 * config.sigma**2, num_threads=num_threads)
+            case _:
+                raise ValueError(f"Unknown ot_method: {config.ot_method}")
+
     
         self.config = config
         self.encoding_net = nn.Sequential(
@@ -99,7 +117,7 @@ class VectorField(nn.Module, TargetConditionalFlowMatcher):
 
 
     def compute_loss(self, x0, x1, cond):
-        t, xt, ut = self.sample_location_and_conditional_flow(x0, x1)
+        t, xt, ut = self.solver.sample_location_and_conditional_flow(x0, x1)
         return F.mse_loss(self(xt, cond, t.view(-1, 1)), ut)
 
 
