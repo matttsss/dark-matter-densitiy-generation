@@ -75,10 +75,12 @@ class VectorField(nn.Module):
                 self.solver = VariancePreservingConditionalFlowMatcher(config.sigma)
             case "exact":
                 self.solver = ExactOptimalTransportConditionalFlowMatcher(config.sigma)
+                # Update number of available threads
                 self.solver.ot_sampler = OTPlanSampler("exact", num_threads=num_threads)
             case "schrodinger":
                 self.solver = SchrodingerBridgeConditionalFlowMatcher(config.sigma)
-                self.solver.ot_sampler = OTPlanSampler(method=config.ot_method, 
+                # Update number of available threads
+                self.solver.ot_sampler = OTPlanSampler(method=self.solver.ot_method, 
                                                        reg=2 * config.sigma**2, num_threads=num_threads)
             case _:
                 raise ValueError(f"Unknown ot_method: {config.ot_method}")

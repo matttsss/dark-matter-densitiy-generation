@@ -18,6 +18,8 @@ if __name__ == "__main__":
 
     from umap import UMAP
     from dataclasses import asdict
+    from sklearn.metrics import mean_squared_error, r2_score
+
     from scripts.model_utils import VectorField, VectorFieldConfig, LinearRegression, load_astropt_model
     from scripts.plot_utils import plot_cross_section_histogram
     from scripts.embedings_utils import merge_datasets, compute_embeddings
@@ -197,7 +199,7 @@ if __name__ == "__main__":
     # ==============================================
 
     plot_folder = f"figures/flow_matching/{args.ot_method}/{sigma_name}_{model_name}"
-    if wandb_run is None: os.makedirs(plot_folder, exist_ok=True)
+    if args.save_plots or wandb_run is None: os.makedirs(plot_folder, exist_ok=True)
 
     metrics = {}
     
@@ -208,8 +210,8 @@ if __name__ == "__main__":
         slope = lin_reg.weights.item()
         intercept = lin_reg.bias.item()
 
-        mse = np.mean((lin_preds[cond_name] - val_cond[cond_name])**2)
-        r2 = 1 - np.sum((lin_preds[cond_name] - val_cond[cond_name])**2) / np.sum((val_cond[cond_name] - np.mean(val_cond[cond_name]))**2)
+        mse = mean_squared_error(val_cond[cond_name], lin_preds[cond_name])
+        r2 = r2_score(val_cond[cond_name], lin_preds[cond_name])
 
         lin_ax.scatter(val_cond[cond_name], lin_preds[cond_name], alpha=0.3)
         lin_ax.plot(val_cond[cond_name], val_cond[cond_name] * slope + intercept, 
@@ -221,8 +223,8 @@ if __name__ == "__main__":
         lin_ax.legend()
 
         rel_diff = np.abs(lin_preds[cond_name] - val_cond[cond_name]) / np.maximum(np.abs(val_cond[cond_name]), 1e-6)
-        mse = np.mean((vf_preds[cond_name] - val_cond[cond_name])**2)
-        r2 = 1 - np.sum((vf_preds[cond_name] - val_cond[cond_name])**2) / np.sum((val_cond[cond_name] - np.mean(val_cond[cond_name]))**2)
+        mse = mean_squared_error(val_cond[cond_name], vf_preds[cond_name])
+        r2 = r2_score(val_cond[cond_name], vf_preds[cond_name])
 
         ax_col = fm_ax.scatter(val_cond[cond_name], vf_preds[cond_name], c=rel_diff, alpha=0.3)
         cbar = fig.colorbar(ax_col, ax=fm_ax, label='Relative difference')
@@ -252,8 +254,6 @@ if __name__ == "__main__":
     if "label" in args.labels:
         fig, (lin_ax, fm_ax) = plt.subplots(1, 2, figsize=(12, 6))
 
-        mse = np.mean((lin_preds["label"] - val_cond["label"])**2)
-        r2 = 1 - np.sum((lin_preds["label"] - val_cond["label"])**2) / np.sum((val_cond["label"] - np.mean(val_cond["label"]))**2)
 
         plot_cross_section_histogram(lin_ax,
             val_cond["label"], lin_preds["label"], 
@@ -270,6 +270,9 @@ if __name__ == "__main__":
             print("Saved plot for label predictions.")
         
         plt.close(fig)
+
+        mse = mean_squared_error(val_cond["label"], vf_preds["label"])
+        r2 = r2_score(val_cond["label"], vf_preds["label"])
 
         metrics["label_mse"] = mse
         metrics["label_r2"] = r2
