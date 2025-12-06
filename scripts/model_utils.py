@@ -20,10 +20,15 @@ class LinearRegression:
         return torch.cat([torch.ones(X.shape[0], 1, device=X.device), X], dim=1)
 
     @torch.no_grad()
-    def fit(self, X, labels):        
+    def fit(self, X, labels):
+        X = torch.as_tensor(X, device=self.device)
+        labels = torch.as_tensor(labels, device=self.device)
+
         # Ensure labels is 2D (num_samples, num_outputs)
         if labels.dim() == 1:
             labels = labels.unsqueeze(1)
+        if X.dim() == 1:
+            X = X.unsqueeze(1)
 
         new_X = LinearRegression._append_bias(X)
         W = (torch.linalg.pinv(new_X.T @ new_X) @ new_X.T @ labels)
