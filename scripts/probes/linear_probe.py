@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 from torch.utils.data import DataLoader
 
-from scripts.model_utils import load_model
+from scripts.model_utils import load_astropt_model
 from scripts.plot_utils import plot_labels
 from scripts.embedings_utils import merge_datasets, compute_embeddings
 
@@ -38,7 +38,7 @@ if __name__ == "__main__":
 
 
     weights_filename = args.model_path
-    model = load_model(weights_filename, device=device, strict=False)
+    model = load_astropt_model(weights_filename, device=device, strict=False)
  
     dataset = merge_datasets([
         "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 

@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from astropt.model import GPT
 
 from embedings_utils import merge_datasets
-from model_utils import batch_to_device, load_model
+from model_utils import batch_to_device, load_astropt_model
 
 argparser = argparse.ArgumentParser(description="Fine-tune AstroPT model on new tasks.")
 argparser.add_argument("--pretrained_path", type=str, default="model/ckpt.pt",
@@ -39,10 +39,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else
 
 # Load pretrained model
 try:
-    model, label_names = load_model(args.pretrained_path, device, get_label_names=True, strict=True)
+    model, label_names = load_astropt_model(args.pretrained_path, device, get_label_names=True, strict=True)
 except RuntimeError:
     label_names = args.label_names
-    model = load_model(args.pretrained_path, device, output_dim=len(label_names), strict=True)
+    model = load_astropt_model(args.pretrained_path, device, output_dim=len(label_names), strict=True)
 
 assert label_names == args.label_names, \
         f"Pretrained model was trained on labels {label_names}, " + \

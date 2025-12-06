@@ -5,90 +5,19 @@ python3 -m scripts.train_generator \
     --model_path <astropt_model_path> \
     --nb_points 14000 --epochs 5000 --sigma 1.0
 """
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
-from dataclasses import dataclass, asdict, field
-from torchcfm.conditional_flow_matching import *
-
-@dataclass
-class VectorFieldConfig:
-    sigma: float = 1.0
-    dim: int = 128
-    encoding_size: int = 64
-    hidden: int = 512
-    conditions: list[str] = field(default_factory=list)
-
-class VectorField(nn.Module, TargetConditionalFlowMatcher):
-    
-    def __init__(self, config: VectorFieldConfig):
-        nn.Module.__init__(self)
-        TargetConditionalFlowMatcher.__init__(self, config.sigma)
-    
-        self.config = config
-        self.encoding_net = nn.Sequential(
-            nn.Linear(len(config.conditions), config.encoding_size//2),
-            nn.SiLU(),
-            nn.Linear(config.encoding_size//2, config.encoding_size),
-            nn.SiLU()
-        )
-    
-        self.net = nn.Sequential(
-            nn.Linear(config.dim + config.encoding_size + 1, config.hidden),
-            nn.SiLU(),
-            nn.Linear(config.hidden, config.hidden),
-            nn.SiLU(),
-            nn.Linear(config.hidden, config.hidden),
-            nn.SiLU(),
-            nn.Linear(config.hidden, config.dim)
-        )
-
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain('relu'))
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-    def forward(self, x, cond, t):
-        encoding = self.encoding_net(cond)
-        return self.net(torch.cat([x, encoding, t], dim=-1))
-
-
-    def compute_loss(self, x0, x1, cond):
-        t, xt, ut = self.sample_location_and_conditional_flow(x0, x1)
-        return F.mse_loss(self(xt, cond, t.view(-1, 1)), ut)
-
-
-@torch.no_grad()
-def sample_flow(v_theta: VectorField, cond, steps=100):
-    """
-    Integrates dx/dt = v_theta(x, t) from t=0 to 1.
-    Start from simple noise distribution.
-    """
-    dt = 1.0 / steps
-    batch_size = cond.size(0)
-
-    t = torch.zeros(batch_size, 1, device=cond.device)
-    x = torch.randn(batch_size, v_theta.config.dim, device=cond.device)
-
-    for _ in range(steps):
-        x += dt * v_theta(x, cond, t)
-        t += dt
-
-    return x
 
 
 if __name__ == "__main__":
     import numpy as np
     import argparse, wandb
     import matplotlib.pyplot as plt
+
+    import torch
     from torch.utils.data import DataLoader, TensorDataset
 
-    from scripts.model_utils import LinearRegression, load_model
+    from dataclasses import asdict
+    from scripts.model_utils import VectorField, VectorFieldConfig, LinearRegression, load_astropt_model
     from scripts.plot_utils import plot_cross_section_histogram
     from scripts.embedings_utils import merge_datasets, compute_embeddings
 
@@ -114,6 +43,10 @@ if __name__ == "__main__":
     model_name = args.model_path.split('/')[-1].replace('.pt','')
     sigma_name = f"sigma_{args.sigma:.3f}".replace('.','_')
 
+    # ==============================================
+    # Setup Wandb
+    # ==============================================
+
     wandb_run = None
     if args.use_wandb:
         wandb_run = wandb.init(
@@ -129,8 +62,11 @@ if __name__ == "__main__":
             }
         )
     
+    # ==============================================
+    # Load astroPT model and compute embeddings
+    # ==============================================
 
-    model = load_model(args.model_path, device=device, strict=True)
+    model = load_astropt_model(args.model_path, device=device, strict=True)
     dataset = merge_datasets([
         "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
         "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
@@ -163,6 +99,10 @@ if __name__ == "__main__":
     val_cond = cond[nb_train:]
 
     del embeddings, cond, cond_dict
+
+    # ==============================================
+    # Train Flow Matching model
+    # ==============================================
 
     train_embed_dl = DataLoader(TensorDataset(train_embeddings, train_cond), 
                                 batch_size=nb_train)
@@ -232,19 +172,23 @@ if __name__ == "__main__":
                     f"model/flow_matching/{model_name}.pt")
     
     # ==============================================
-    # Plot training curves
+    # Make predictions for plots
     # ==============================================
 
     lin_reg = LinearRegression(device).fit(train_embeddings, train_cond)
     lin_preds = lin_reg.predict(val_embeddings).cpu().numpy()
 
-    vf_embeddings = sample_flow(fm_model, val_cond, steps=int(1e4))
+    vf_embeddings = fm_model.sample_flow(val_cond, steps=int(1e4))
     vf_preds = lin_reg.predict(vf_embeddings).cpu().numpy()
 
     lin_preds = {label_name: lin_preds[:, i] for i, label_name in enumerate(fm_model.config.conditions)}
     vf_preds = {cond_name: vf_preds[:, i] for i, cond_name in enumerate(fm_model.config.conditions)}
     val_cond = {label_name: val_cond[:, i].cpu().numpy() for i, label_name in enumerate(fm_model.config.conditions)}
 
+
+    # ==============================================
+    # Plot predictions (except for cross sections)
+    # ==============================================
 
     for cond_name in filter(lambda x: "label" not in x, args.labels):
         fig, (lin_ax, fm_ax) = plt.subplots(1, 2, figsize=(12, 6))
@@ -270,6 +214,10 @@ if __name__ == "__main__":
         
         plt.close(fig)
     
+    # ==============================================
+    # Plot cross-section for label if available
+    # ==============================================
+
     if "label" in args.labels:
         fig, (lin_ax, fm_ax) = plt.subplots(1, 2, figsize=(12, 6))
 

@@ -16,7 +16,7 @@ from sklearn.preprocessing import StandardScaler
 
 from scripts.embedings_utils import merge_datasets, batch_to_device
 from scripts.plot_utils import plot_labels
-from scripts.model_utils import load_model
+from scripts.model_utils import load_astropt_model
 
 
 if __name__ == "__main__":
@@ -36,7 +36,7 @@ if __name__ == "__main__":
     print(f"Generating embeddings on device: {device}")
     weights_filename = args.model_path
 
-    model, label_names = load_model(checkpoint_path=weights_filename, 
+    model, label_names = load_astropt_model(checkpoint_path=weights_filename, 
                        device=device, get_label_names=True, strict=True)
     model.eval()
 

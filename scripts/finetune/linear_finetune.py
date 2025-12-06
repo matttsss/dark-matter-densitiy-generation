@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
 from scripts.embedings_utils import merge_datasets, compute_embeddings
-from scripts.model_utils import LinearRegression, batch_to_device, load_model
+from scripts.model_utils import LinearRegression, batch_to_device, load_astropt_model
 
 argparser = argparse.ArgumentParser(description="Fine-tune AstroPT model on new tasks.")
 argparser.add_argument("--pretrained_path", type=str, default="model/ckpt.pt",
@@ -99,7 +99,7 @@ val_dl = DataLoader(
 )
 
 # Load pretrained model
-model = load_model(args.pretrained_path, device, strict=True)
+model = load_astropt_model(args.pretrained_path, device, strict=True)
 
 # Train all parameters
 for param in model.parameters():

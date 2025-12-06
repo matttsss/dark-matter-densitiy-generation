@@ -6,7 +6,6 @@ import numpy as np
 from umap import UMAP
 from scripts.model_utils import LinearRegression
 from scripts.plot_utils import plot_labels
-from scripts.train_generator import VectorField, VectorFieldConfig, sample_flow
 
 @torch.no_grad()
 def predict_fm_model(fm_model, embeddings, labels, cond_names, label_names, train_ratio=0.8):
@@ -20,7 +19,7 @@ def predict_fm_model(fm_model, embeddings, labels, cond_names, label_names, trai
     lin_preds = lin_reg.predict(embeddings)
     lin_preds = {label_name: lin_preds[:, i] for i, label_name in enumerate(label_names)}
 
-    vf_embeddings = sample_flow(fm_model, cond, steps=500)
+    vf_embeddings = fm_model.sample_flow(cond, steps=500)
     vf_preds = lin_reg.predict(vf_embeddings)
     vf_preds = {cond_name: vf_preds[:, i] for i, cond_name in enumerate(label_names)}
 
@@ -50,7 +49,7 @@ def umap_compare(vf_embeddings, embeddings, ground_truth):
 
 if __name__ == "__main__":
     import argparse
-    from scripts.model_utils import load_model
+    from scripts.model_utils import load_astropt_model, load_fm_model
     from scripts.embedings_utils import merge_datasets, compute_embeddings
     from torch.utils.data import DataLoader
  
@@ -69,17 +68,14 @@ if __name__ == "__main__":
                           "cuda" if torch.cuda.is_available() else "cpu")
 
     # ================= Load Models =================
-    checkpoint = torch.load(args.fm_model_path, map_location=device, weights_only=False)
-    fm_config = VectorFieldConfig(**checkpoint["config"])
-    v_theta = VectorField(fm_config).to(device)
-    v_theta.load_state_dict(checkpoint["state_dict"])
-    v_theta.eval()
+    fm_model = load_fm_model(args.fm_model_path, device=device, strict=True)
+    fm_model.eval()
 
-    astropt_model = load_model(args.astropt_model_path, device=device, strict=True)
+    astropt_model = load_astropt_model(args.astropt_model_path, device=device, strict=True)
     astropt_model.eval()
 
     # =============== Load datasets ===================
-    merged_labels = fm_config.conditions + [label_name for label_name in args.labels if label_name not in fm_config.conditions]
+    merged_labels = fm_model.config.conditions + [label_name for label_name in args.labels if label_name not in fm_model.config.conditions]
     dataset = merge_datasets([
         "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
         "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
@@ -100,7 +96,7 @@ if __name__ == "__main__":
     embeddings, labels = compute_embeddings(astropt_model, dl, device, merged_labels)
 
     vf_embeddings, vf_preds, lin_preds = predict_fm_model(
-        v_theta, embeddings, labels, fm_config.conditions, args.labels)
+        fm_model, embeddings, labels, fm_model.config.conditions, args.labels)
     
     vf_embeddings = vf_embeddings.cpu().numpy()
     embeddings = embeddings.cpu().numpy()
