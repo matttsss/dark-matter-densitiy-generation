@@ -33,7 +33,7 @@ def training_script(output_dir: str, weights_path: str):
     run = wandb.init(
         entity="matttsss-epfl",
         project="astropt_diffusion",
-        name="Diffusion first try",
+        name="Diffusion FIRST TRUE RUN",
     )
 
     # -------------------------------------------------
@@ -172,11 +172,11 @@ def training_script(output_dir: str, weights_path: str):
         num_train_batches = 0
 
         for batch, images_dict in zip(train_loader,dataloader_images_only_train):
-
             
             images_array = np.array(images_dict["image"])
             x_0 = torch.from_numpy(images_array).float().to(device)
-            x_0 = x_0.permute(1, 0, 2, 3)
+            x_0 = x_0.permute(3, 0, 1, 2)
+
             conditions = batch[0].to(device)
 
             B = x_0.size(0)
@@ -213,9 +213,8 @@ def training_script(output_dir: str, weights_path: str):
 
                 images_array = np.array(images_dict["image"])
                 x_0 = torch.from_numpy(images_array).float().to(device)
-                x_0 = x_0.permute(1, 0, 2, 3)
+                x_0 = x_0.permute(3, 0, 1, 2)
       
-                
                 conditions = batch[0].to(device)
 
                 B = x_0.size(0)
@@ -232,6 +231,9 @@ def training_script(output_dir: str, weights_path: str):
                 loss = F.mse_loss(noise_pred, noise)
                 val_loss += loss.item()
                 num_val_batches += 1
+                wandb.log({
+                "batch_loss": loss.item(),
+            })
 
         val_loss /= max(1, num_val_batches)
 
@@ -254,13 +256,14 @@ def training_script(output_dir: str, weights_path: str):
                 diffusion_model.state_dict(),
                 os.path.join(output_dir, "best_diffusion_model.pt"),
             )
+            print("saved best diffusion model")
 
     run.finish()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output_dir", type=str,default="results/diffusion")
+    parser.add_argument("--output_dir", type=str,default="results_diffusion/")
     parser.add_argument(
         "--weights_path",
         type=str,

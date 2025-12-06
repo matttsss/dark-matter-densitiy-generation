@@ -82,7 +82,7 @@ class TimestepEmbedder(nn.Module):
 
 class ConditionsEmbedder(nn.Module):
     """Embed conditioning vector into hidden space."""
-    def __init__(self, hidden_size, conditions_size=712):
+    def __init__(self, hidden_size, conditions_size=768):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(conditions_size, hidden_size, bias=True),
@@ -154,18 +154,18 @@ class DiT(nn.Module):
         depth: Number of transformer blocks
         num_heads: Number of attention heads
         mlp_ratio: MLP hidden dimension = hidden_size * mlp_ratio
-        cond_dim: Conditioning vector dimension (e.g., 712)
+        cond_dim: Conditioning vector dimension (e.g., 768)
     """
     def __init__(
         self,
-        img_size=128,
+        img_size=100,
         patch_size=8,
         in_channels=1,
         hidden_size=512,
-        depth=12,
-        num_heads=8,
+        depth=3,
+        num_heads=3,
         mlp_ratio=4.0,
-        cond_dim=712,
+        cond_dim=768,
     ):
         super().__init__()
         self.img_size = img_size
@@ -251,7 +251,7 @@ class DiT(nn.Module):
         Args:
             x: (B, C, H, W) - noisy images
             t: (B,) - timesteps
-            conditions: (B, 712) - conditioning vectors
+            conditions: (B, 768) - conditioning vectors
         
         Returns:
             (B, C, H, W) - predicted noise

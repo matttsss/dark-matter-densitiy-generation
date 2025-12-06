@@ -18,7 +18,7 @@ class DDPM(nn.Module):
         timesteps=1000,
         beta_start=1e-4,
         beta_end=0.02,
-        cond_dim=712,
+        cond_dim=768,
         patch_size=10,
         hidden_size=512,
         depth=12,
