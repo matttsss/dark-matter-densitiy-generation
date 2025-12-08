@@ -57,7 +57,7 @@ class VectorFieldConfig:
     sigma: float = 1.0
     dim: int = 128
     encoding_size: int = 64
-    hidden: int = 512,
+    hidden: int = 512
     ot_method: str = "default"
     conditions: list[str] = field(default_factory=list)
 

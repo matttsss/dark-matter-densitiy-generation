@@ -45,8 +45,8 @@ if __name__ == "__main__":
         "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
         "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
         "data/DarkData/BAHAMAS/bahamas_1.pkl",
-        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"]) \
-            .select_columns(["images", "images_positions", *label_names]) \
+        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"], 
+        label_names, stack_features=False)\
             .shuffle(seed=42) \
             .take(args.nb_points)
 

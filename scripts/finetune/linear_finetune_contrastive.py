@@ -144,16 +144,8 @@ dataset = merge_datasets([
         "data/BAHAMAS/bahamas_0.1.pkl",
         "data/BAHAMAS/bahamas_0.3.pkl",
         "data/BAHAMAS/bahamas_1.pkl",
-        "data/BAHAMAS/bahamas_cdm.pkl"]) \
-        .select_columns(["images", "images_positions", *label_names]) \
-        .shuffle(seed=42) \
-        .map(lambda row: {
-            "images": row["images"],
-            "images_positions": row["images_positions"],
-            "labels": torch.stack(
-                [(torch.log(row[label]) if label == "lensing_norm" else row[label])
-                  for label in label_names], dim=0)
-        }).take(300)
+        "data/BAHAMAS/bahamas_cdm.pkl"], 
+        label_names, stack_features=True)
 
 dataset = dataset.train_test_split(test_size=0.3, seed=42)
 train_dataset = dataset['train']
@@ -210,6 +202,10 @@ _ = lin_reg.fit(epoch_embedings, epoch_labels_stacked)
 label_idx_for_contrastive = None
 if "label" in label_names:
     label_idx_for_contrastive = label_names.index("label")
+if "log_label" in label_names:
+    if label_idx_for_contrastive is not None:
+        raise ValueError("Cannot use both 'label' and 'log_label' for contrastive loss.")
+    label_idx_for_contrastive = label_names.index("log_label")
 
 # ----------------------------------------------------------
 # Training loop
@@ -232,8 +228,6 @@ for epoch in range(num_epochs):
                   disable=wandb_run is not None):
         B = batch_to_device(B, device)
 
-        optimizer.zero_grad()
-
         # [B, D] embeddings
         batch_embeddings = torch.mean(model.get_embeddings(B)["images"], dim=1)
         predictions = lin_reg.predict(batch_embeddings)
@@ -253,10 +247,12 @@ for epoch in range(num_epochs):
         total_loss = mse_loss + contrastive_weight * supcon_loss
         total_loss.backward()
 
-        optimizer.step()
-
         train_loss += mse_loss.item() / len(train_dl)
         train_contrastive_loss += supcon_loss.item() / len(train_dl)
+
+    optimizer.step()
+    optimizer.zero_grad()
+    scheduler.step()
 
     # --------- VALIDATION ----------
     model.eval()
@@ -284,9 +280,6 @@ for epoch in range(num_epochs):
 
             val_loss += mse_loss.item() / len(val_dl)
             val_contrastive_loss += supcon_loss.item() / len(val_dl)
-
-    # Step LR scheduler once per epoch
-    scheduler.step()
 
     # --------- Refit linear probe on updated embeddings ----------
     with torch.no_grad():

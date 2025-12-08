@@ -47,69 +47,114 @@ def spiralise(galaxy):
             else np.stack(spiraled)
         )
 
-def fetch_dataset(dataset_path: str):
+def fetch_dataset(dataset_path: str, feature_names: list[str], stack_features: bool):
 
     cache_file_path = f"cache/{'.'.join(dataset_path.split('/')[-1].split('.')[:-1])}"
 
-    if os.path.isdir(cache_file_path):
-        print(f"Loading processed dataset from {cache_file_path}...")
-        return Dataset.load_from_disk(cache_file_path)
+    if not os.path.isdir(cache_file_path):
+        
 
-    with open(dataset_path, 'rb') as f:
-        metadata, images = pickle.load(f)
+        with open(dataset_path, 'rb') as f:
+            metadata, images = pickle.load(f)
 
-    del metadata["name"]
-    del metadata["galaxy_catalogues"]
-    images = images[::, [0, 0, 0]]
-    ds = Dataset.from_dict({"image": images, **metadata})
+        del metadata["name"]
+        del metadata["galaxy_catalogues"]
+        images = images[::, [0, 0, 0]]
+        ds = Dataset.from_dict({"image": images, **metadata})
 
-    def process_row(idx):
-        """This function ensures that the image is tokenised in the same way as
-        the pre-trained model is expecting"""
+        def process_row(idx):
+            """This function ensures that the image is tokenised in the same way as
+            the pre-trained model is expecting"""
 
-        image = idx["image"]  # [H,W,C] in numpy
-        del idx["image"]
+            image = idx["image"]  # [H,W,C] in numpy
+            del idx["image"]
 
-        idx["norms"] = idx["norms"][0]
+            idx["norms"] = idx["norms"][0]
+        
+            # Upscale to 256x256
+            image = interpolate(
+                torch.Tensor(image, device="cpu").unsqueeze(0), # [C,H,W] -> [1,C,H,W]
+                size=(256, 256),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
+
+            # Patchify
+            patch_size = 16
+            patch_galaxy = einops.rearrange(
+                image,
+                "c (h p1) (w p2) -> (h w) (p1 p2 c)",
+                p1=patch_size,
+                p2=patch_size,
+            ).to(torch.float)
+
+            # Normalize patches
+            std, mean = torch.std_mean(patch_galaxy, dim=1, keepdim=True)
+            patch_galaxy = (patch_galaxy - mean) / (std + 1e-8)
+
+            # Spiralise patches
+            patch_galaxy = spiralise(patch_galaxy)
+
+            galaxy_positions = torch.arange(len(patch_galaxy), dtype=torch.long)
+            return {
+                "images": patch_galaxy,
+                "images_positions": galaxy_positions,
+                **idx
+            }
     
-        # Upscale to 256x256
-        image = interpolate(
-            torch.Tensor(image, device="cpu").unsqueeze(0), # [C,H,W] -> [1,C,H,W]
-            size=(256, 256),
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(0)
+        ds = ds.map(process_row).with_format("torch")
+        ds.save_to_disk(cache_file_path) 
 
-        # Patchify
-        patch_size = 16
-        patch_galaxy = einops.rearrange(
-            image,
-            "c (h p1) (w p2) -> (h w) (p1 p2 c)",
-            p1=patch_size,
-            p2=patch_size,
-        ).to(torch.float)
+    else:
+        print(f"Loading processed dataset from {cache_file_path}...")
+        ds = Dataset.load_from_disk(cache_file_path)
 
-        # Normalize patches
-        std, mean = torch.std_mean(patch_galaxy, dim=1, keepdim=True)
-        patch_galaxy = (patch_galaxy - mean) / (std + 1e-8)
+    # Feature augmentation
+    collumns_to_select = ["images", "images_positions", *feature_names]
+    if "BCG_norm" in feature_names:
+        collumns_to_select.append("BCG_e1")
+        collumns_to_select.append("BCG_e2")
+        collumns_to_select.remove("BCG_norm")
 
-        # Spiralise patches
-        patch_galaxy = spiralise(patch_galaxy)
+    if "log_label" in feature_names:
+        collumns_to_select.append("label")
+        collumns_to_select.remove("log_label")
 
-        galaxy_positions = torch.arange(len(patch_galaxy), dtype=torch.long)
-        return {
-            "images": patch_galaxy,
-            "images_positions": galaxy_positions,
-            **idx
-        }
+    ds = ds.select_columns(collumns_to_select)
 
-    ds = ds.map(process_row).with_format("torch")    
-    ds.save_to_disk(cache_file_path)
-  
+    collumns_to_remove = []
+    if "BCG_norm" in feature_names:
+        ds = ds.map(lambda row: {
+            **row,
+            "BCG_norm": torch.sqrt(row["BCG_e1"]**2 + row["BCG_e2"]**2),
+        })
+        if "BCG_e1" not in feature_names:
+            collumns_to_remove.append("BCG_e1")
+        
+        if "BCG_e2" not in feature_names:
+            collumns_to_remove.append("BCG_e2")
+
+    if "log_label" in feature_names:
+        ds = ds.map(lambda row: {
+            **row,
+            "log_label": torch.log(row["label"]),
+        })
+        if "label" not in feature_names:
+            collumns_to_remove.append("label")
+
+    ds = ds.remove_columns(collumns_to_remove)
+
+    if stack_features:
+        ds = ds.map(lambda row: {
+            "images": row["images"],
+            "images_positions": row["images_positions"],
+            "labels": torch.stack([row[label] for label in feature_names], dim=0)
+        })
+
     return ds
 
-def merge_datasets(datasets: list[str]) -> Dataset:
-    return concatenate_datasets([fetch_dataset(path) for path in datasets])
+def merge_datasets(datasets: list[str], feature_names: list[str], stack_features: bool) -> Dataset:
+    return concatenate_datasets([fetch_dataset(path, feature_names, stack_features) for path in datasets])
 
 @torch.no_grad()
 def compute_embeddings(model, dataloader, device: torch.device, label_names: list[str],

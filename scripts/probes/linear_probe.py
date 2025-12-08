@@ -44,10 +44,10 @@ if __name__ == "__main__":
         "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
         "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
         "data/DarkData/BAHAMAS/bahamas_1.pkl",
-        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"]) \
-            .select_columns(["images", "images_positions", *labels_name]) \
-            .shuffle(seed=42) \
-            .take(args.nb_points)    
+        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"], 
+        labels_name, stack_features=False) \
+        .shuffle(seed=42) \
+        .take(args.nb_points)    
 
     dl = DataLoader(
         dataset,
@@ -87,7 +87,7 @@ if __name__ == "__main__":
 
     fig.savefig(f"figures/umap_{data_name}_magnitudes.png", dpi=300)
     plt.show()
-    plt.clf()
+    plt.close(fig)
 
 
     # =============================================================================
@@ -130,48 +130,51 @@ if __name__ == "__main__":
     
     fig.savefig(f"figures/{data_name}_pred.png", dpi=300)
     plt.show()
-    plt.clf()
+    plt.close(fig)
 
     # =============================================================================
     # Plot labels distribution
     # =============================================================================
-    test_embedings = embeddings[halfway:]
-    test_labels = labels["label"][halfway:]
-    train_embeddings = embeddings[:halfway]
-    train_labels = labels["label"][:halfway]
-
-    probe = LinearRegression().fit(train_embeddings, train_labels)
-    predictions = probe.predict(test_embedings)
-    
-    fig, ax = plt.subplots(figsize=(6,4))
-    unique_cross_sections = np.unique(test_labels)
-    for cross_section in unique_cross_sections:
-        mask = test_labels == cross_section
-        predicted_label = predictions[mask]
-
-        mean = np.mean(predicted_label)
-        std = np.std(predicted_label)
-
-        # plot histogram for the given class
-        n, bins, patches = ax.hist(predicted_label, bins=45, alpha=1/len(unique_cross_sections), 
-                label=f"$\\sigma_{{{cross_section:.2f}}}$: {mean:.2f} ± {std:.2f}")
+    if "label" in labels or "log_label" in labels:
+        key = "label" if "label" in labels else "log_label"
+        test_embedings = embeddings[halfway:]
+        test_labels = labels[key][halfway:]
+        train_embeddings = embeddings[:halfway]
+        train_labels = labels[key][:halfway]
+        probe = LinearRegression().fit(train_embeddings, train_labels)
+        predictions = probe.predict(test_embedings)
         
-        # add vertical line at the mean
-        facecolor = patches[0].get_facecolor()
-        ax.axvline(mean, linestyle="--", color=facecolor)
+        fig, ax = plt.subplots(figsize=(6,4))
+        unique_cross_sections = np.unique(test_labels)
+        for cross_section in unique_cross_sections:
+            mask = test_labels == cross_section
+            predicted_label = predictions[mask]
 
-        # add floating text at the top of the vertical line with the same color
-        ylim = ax.get_ylim()
-        offset = 0.02 * (ylim[1] - ylim[0])
-        y_top = min(n.max() + offset, ylim[1] - offset)
-        ax.text(mean, y_top, f"{mean:.2f}", color=facecolor, ha="left", va="bottom", fontsize=9)
+            mean = np.mean(predicted_label)
+            std = np.std(predicted_label)
 
-    ax.set_xlabel("Cross-section prediction")
-    ax.set_ylabel("Count")
-    ax.set_title(f"Cross-section distribution\nfor different labels in {data_name} model")
-    ax.legend()
+            # plot histogram for the given class
+            label = f"\\sigma_{{{cross_section:.2f}}}" if key == "label" else \
+                    f"\\ln(\\sigma_{{{np.exp(cross_section):.2f}}}) = {cross_section:.2f}"
+            n, bins, patches = ax.hist(predicted_label, bins=45, alpha=1/len(unique_cross_sections), 
+                    label=f"${label}: {mean:.2f} \\pm {std:.2f}$")
+            
+            # add vertical line at the mean
+            facecolor = patches[0].get_facecolor()
+            ax.axvline(mean, linestyle="--", color=facecolor)
 
-    fig.savefig(f"figures/{data_name}_cross_section_distribution.png", dpi=300)
+            # add floating text at the top of the vertical line with the same color
+            ylim = ax.get_ylim()
+            offset = 0.02 * (ylim[1] - ylim[0])
+            y_top = min(n.max() + offset, ylim[1] - offset)
+            ax.text(mean, y_top, f"{mean:.2f}", color=facecolor, ha="left", va="bottom", fontsize=9)
 
-    plt.show()
-    plt.clf()
+        ax.set_xlabel("Cross-section prediction")
+        ax.set_ylabel("Count")
+        ax.set_title(f"Cross-section distribution\nfor different labels in {data_name} model")
+        ax.legend()
+
+        fig.savefig(f"figures/{data_name}_cross_section_distribution.png", dpi=300)
+
+        plt.show()
+        plt.close(fig)

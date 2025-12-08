@@ -77,14 +77,8 @@ dataset = merge_datasets([
         "data/DarkData/BAHAMAS/bahamas_0.1.pkl",
         "data/DarkData/BAHAMAS/bahamas_0.3.pkl",
         "data/DarkData/BAHAMAS/bahamas_1.pkl",
-        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"]) \
-        .select_columns(["images", "images_positions", *label_names]) \
-        .shuffle(seed=42) \
-        .map(lambda row:  {
-                "images": row["images"],
-                "images_positions": row["images_positions"],
-                "labels": torch.stack([row[label] for label in label_names], dim=0)
-        })
+        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"],
+        label_names, stack_features=True)
 
 dataset = dataset.train_test_split(test_size=0.3, seed=42)
 train_dataset = dataset['train']
