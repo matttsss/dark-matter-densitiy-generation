@@ -11,7 +11,7 @@ def plot_labels(plot_func, title, label_names: list[str], **kwargs):
     """Generic function to plot multiple labels in a grid using a provided plotting function
     
     Args:
-        plot_func: function with signature (fig, ax, index, **kwargs)
+        plot_func: function with signature (fig, ax, label_name, **kwargs)
         title: overall figure title
     Returns:
         fig: matplotlib figure object
@@ -36,6 +36,23 @@ def plot_labels(plot_func, title, label_names: list[str], **kwargs):
     fig.tight_layout()
 
     return fig
+
+
+def plot_cross_section_histogram(ax, ref_values, pred_values, pred_method_name, bin_range=(-0.1, 1.1), nbins=30):
+    unique_values = np.unique(ref_values)
+    alpha = 1 / len(unique_values)
+    for label in unique_values:
+        mask = (ref_values == label)
+
+        mean_lin_pred = pred_values[mask].mean()
+        std_lin_pred = pred_values[mask].std()
+        ax.hist(pred_values[mask], alpha=alpha, bins=nbins,
+                range=bin_range, label=f'$\\sigma_{{{label:.2f}}}$: {mean_lin_pred:.2f} ± {std_lin_pred:.2f}')
+
+    ax.set_title(f"Predicting $\\sigma$ with {pred_method_name}")
+    ax.set_xlabel("Ground truth $\\sigma$")
+    ax.set_ylabel("Predicted $\\sigma$")
+    ax.legend()
 
 
 def plot_probes(embeddings, labels_dict, data_name):
@@ -110,7 +127,7 @@ def plot_probes(embeddings, labels_dict, data_name):
         ax.set_title(f"Predictions for {label_name}\nMSE: {mse:.4f}, R2: {r2:.4f}")
         ax.set_xlabel(f"Ground truth {label_name}")
         ax.set_ylabel(f"Predicted {label_name}")
-
+        ax.legend()
     
     fig = plot_labels(plot_probe_predictions, f"Normalized linear probe predictions of {data_name} embeddings", 
                       list(labels_dict.keys()), embeddings=embeddings, labels_dict=labels_dict)
