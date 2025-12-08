@@ -11,7 +11,7 @@ import torch.nn.functional as F
 import numpy as np  
 import wandb
 
-from model_utils import load_model
+from model_utils import load_astropt_model
 from embedings_utils import merge_datasets, compute_embeddings
 from generative_model.DDPM import DDPM
 
@@ -49,11 +49,9 @@ def training_script(output_dir: str, weights_path: str):
 
     print(f" -> (meta) embed_dim={embed_dim_meta}, lora_rank={lora_rank}, output_dim={output_dim}")
 
-    model = load_model(
+    model = load_astropt_model(
         checkpoint_path=weights_path,
-        device=device,
-        lora_rank=lora_rank,
-        output_dim=output_dim,
+        device=device
     )
     model.eval()
 
@@ -263,7 +261,7 @@ def training_script(output_dir: str, weights_path: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output_dir", type=str,default="results_diffusion/")
+    parser.add_argument("--output_dir", type=str,default="model_weights/")
     parser.add_argument(
         "--weights_path",
         type=str,
