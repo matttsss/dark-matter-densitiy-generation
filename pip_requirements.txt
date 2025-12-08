@@ -16,4 +16,5 @@ torchvision
 
 astropt
 timm
+torchdiffeq
 torchcfm

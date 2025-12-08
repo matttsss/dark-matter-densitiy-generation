@@ -5,52 +5,129 @@ python3 -m scripts.train_generator \
     --model_path <astropt_model_path> \
     --nb_points 14000 --epochs 5000 --sigma 1.0
 """
+import numpy as np
+import argparse, wandb, os
+import matplotlib.pyplot as plt
+
+import torch
+from torchdiffeq import odeint_adjoint
+from torch.utils.data import DataLoader, TensorDataset
+
+from umap import UMAP
+from dataclasses import asdict
+from sklearn.metrics import mean_squared_error, r2_score
+
+from scripts.model_utils import VectorField, VectorFieldConfig, LinearRegression, load_astropt_model
+from scripts.plot_utils import plot_cross_section_histogram
+from scripts.embedings_utils import merge_datasets, compute_embeddings
 
 
+def get_datasets(model_path, label_names, split_ratio=0.8, nb_points=14000):
+    model = load_astropt_model(model_path, device=device, strict=True)
+    dataset = merge_datasets([
+        "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
+        "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
+        "data/DarkData/BAHAMAS/bahamas_1.pkl",
+        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"],
+        feature_names=label_names, stack_features=False) \
+            .shuffle(seed=42) \
+            .take(nb_points)    
 
-if __name__ == "__main__":
-    import numpy as np
-    import argparse, wandb, os
-    import matplotlib.pyplot as plt
+    has_metals = device.type == 'mps'
+    dl = DataLoader(
+        dataset,
+        batch_size = 64 if has_metals else 256,
+        num_workers = 0 if has_metals else 4,
+        prefetch_factor = None if has_metals else 3
+    )
 
-    import torch
-    from torch.utils.data import DataLoader, TensorDataset
+    embeddings, cond_dict = compute_embeddings(model, dl, device, label_names)
+    cond = torch.stack([cond_dict[k] for k in label_names], dim=-1)
 
-    from umap import UMAP
-    from dataclasses import asdict
-    from sklearn.metrics import mean_squared_error, r2_score
+    # Split into train and val
+    nb_train = int(split_ratio * embeddings.size(0))
 
-    from scripts.model_utils import VectorField, VectorFieldConfig, LinearRegression, load_astropt_model
-    from scripts.plot_utils import plot_cross_section_histogram
-    from scripts.embedings_utils import merge_datasets, compute_embeddings
+    train_embeddings = embeddings[:nb_train]
+    val_embeddings = embeddings[nb_train:]
+    train_cond = cond[:nb_train]
+    val_cond = cond[nb_train:]
 
-    parser = argparse.ArgumentParser(
-                    prog='GenAstroPT',
-                    description='Trains a flow matching model on astroPT embeddings')
-    parser.add_argument('--nb_points', type=int, default=7000, help='Number of points to use for embeddings')
-    parser.add_argument('--labels', nargs='+', default=["mass", "label"], help='Labels to use for the conditions of the flow matching model')
-    parser.add_argument('--model_path', type=str, default="model/ckpt.pt", help='Path to the astropt checkpoint')
-    parser.add_argument('--epochs', type=int, default=3000, help='Number of training epochs')
+    return (train_embeddings, val_embeddings), (train_cond, val_cond)
+
+def train_model(train_dl: DataLoader, val_dl: DataLoader, fm_model: VectorField, 
+                wandb_run, epochs, checkpoint_path) -> VectorField:
+    opt = torch.optim.AdamW(fm_model.parameters(), lr=1e-4)
+
+    # gaussian = torch.distributions.normal.Normal(
+    #     loc=torch.zeros(fm_model.config.dim, device=),
+    #     scale=torch.ones(fm_model.config.dim, device=fm_model.device)
+    # )
+
+    best_model = None
+    best_val_loss = float('inf')
+    for epoch in range(epochs):
+        train_loss = 0.0
+        for x1, cond in train_dl:
+            x1 = x1.to(device)
+            cond = cond.to(device)
+
+            x0 = torch.randn_like(x1)
+            loss = fm_model.compute_loss(x0, x1, cond)
+
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+                
+            train_loss += loss.item()
+
+        train_loss /= len(train_dl)
+
+        val_loss = 0.0
+        for x1, cond in val_dl:
+            x1 = x1.to(device)
+            cond = cond.to(device)
+
+            x0 = torch.randn_like(x1)
+            loss = fm_model.compute_loss(x0, x1, cond)
+
+            val_loss += loss.item()
+
+        val_loss /= len(val_dl)
+        
+        if epoch % 10 == 0:
+            if wandb_run is not None:
+                wandb_run.log({
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                })
+            else:
+                print(f"Epoch {epoch}: train_loss: {train_loss:.4f}, val_loss: {val_loss:.4f}")
+
+            if val_loss < best_val_loss:
+                best_model = fm_model.state_dict()
+                best_val_loss = val_loss
+                torch.save({
+                        "state_dict": best_model,
+                        "config": asdict(fm_model.config),
+                        "conditions": fm_model.config.conditions,
+                        "val_loss": best_val_loss
+                    }, checkpoint_path)
+                
+    print(f"Training completed. Best val loss: {best_val_loss:.4f}\n\n")
+    if best_model is None:
+        return fm_model
     
-    parser.add_argument('--sigma', type=float, default=0.1, help='Sigma value for the flow matching model')
-    parser.add_argument('--ot_method', type=str, default="default", help='Optimal transport method to use')
+    fm_model.load_state_dict(best_model)
+    return fm_model
 
-    parser.add_argument('--save_plots', action='store_true', help='Whether to save plots locally')
-    parser.add_argument('--use_wandb', action='store_true', help='Whether to use wandb for logging')
-    args = parser.parse_args()
-    
-    np.random.seed(42)
-    torch.manual_seed(42)
-    has_metals = torch.backends.mps.is_available()  
-    device = torch.device('mps' if has_metals else 
-                          'cuda' if torch.cuda.is_available() else 
-                          'cpu')
-    
+
+def main(args, device):
     print(f"Generating embeddings on device: {device}")
 
     model_name = args.model_path.split('/')[-1].replace('.pt','')
     sigma_name = f"sigma_{args.sigma:.3f}".replace('.','_')
-    checkpoint_path = f"model/flow_matching/{args.ot_method}_{sigma_name}_{model_name}.pt"
+    path_prefix = args.path_prefix + '_' if args.path_prefix else ""
+    checkpoint_path = f"model/flow_matching/{path_prefix}{args.ot_method}_{sigma_name}_{model_name}.pt"
 
     # ==============================================
     # Setup Wandb
@@ -72,43 +149,14 @@ if __name__ == "__main__":
             }
         )
     
-    # ==============================================
-    # Load astroPT model and compute embeddings
-    # ==============================================
+    # Compute datasets
+    (train_embeddings, val_embeddings), (train_cond, val_cond) = \
+        get_datasets(args.model_path, args.labels, split_ratio=0.8, nb_points=args.nb_points)
 
-    model = load_astropt_model(args.model_path, device=device, strict=True)
-    dataset = merge_datasets([
-        "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
-        "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
-        "data/DarkData/BAHAMAS/bahamas_1.pkl",
-        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"]) \
-            .select_columns(["images", "images_positions", *args.labels]) \
-            .shuffle(seed=42) \
-            .take(args.nb_points)    
-
-    dl = DataLoader(
-        dataset,
-        batch_size = 64 if has_metals else 256,
-        num_workers = 0 if has_metals else 4,
-        prefetch_factor = None if has_metals else 3
-    )
-
-    embeddings, cond_dict = compute_embeddings(model, dl, device, args.labels)
-    cond = torch.stack([cond_dict[k] for k in args.labels], dim=-1)
-    nb_embeddings = embeddings.size(0)
-    embeddings_dim = embeddings.size(-1)
-
-    # Split into train and val
-    nb_train = int(0.8 * nb_embeddings)
-    print(f"Training flow matching model on {nb_train} embeddings of dimension {embeddings_dim}.")
-    print(f"Validation on {nb_embeddings - nb_train} embeddings.")
-
-    train_embeddings = embeddings[:nb_train]
-    val_embeddings = embeddings[nb_train:]
-    train_cond = cond[:nb_train]
-    val_cond = cond[nb_train:]
-
-    del embeddings, cond, cond_dict
+    nb_train = train_embeddings.size(0)
+    nb_embeddings = train_embeddings.size(0) + val_embeddings.size(0)
+    embeddings_dim = train_embeddings.size(1)
+    print(f"Train embeddings: {train_embeddings.shape}, Val embeddings: {val_embeddings.shape}")
 
     # ==============================================
     # Train Flow Matching model
@@ -122,62 +170,12 @@ if __name__ == "__main__":
     fm_config = VectorFieldConfig(
         sigma=args.sigma,
         dim=embeddings_dim,
-        hidden=512,
         ot_method=args.ot_method,
         conditions=args.labels
     )
     fm_model = VectorField(fm_config, num_threads=4).to(device)
-    opt = torch.optim.AdamW(fm_model.parameters(), lr=1e-4)
-
-    best_val_loss = float('inf')
-    for epoch in range(args.epochs):
-        train_loss = 0.0
-        for x1, cond in train_embed_dl:
-            x1 = x1.to(device).view(x1.size(0), -1)
-            cond = cond.to(device).view(cond.size(0), -1)
-
-            x0 = torch.randn_like(x1)
-            loss = fm_model.compute_loss(x0, x1, cond)
-
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-                
-            train_loss += loss.item()
-
-        train_loss /= len(train_embed_dl)
-
-        val_loss = 0.0
-        for x1, cond in val_embed_dl:
-            x1 = x1.to(device).view(x1.size(0), -1)
-            cond = cond.to(device).view(cond.size(0), -1)
-
-            x0 = torch.randn_like(x1)
-            loss = fm_model.compute_loss(x0, x1, cond)
-
-            val_loss += loss.item()
-
-        val_loss /= len(val_embed_dl)
-        
-        if epoch % 10 == 0:
-            if wandb_run is not None:
-                wandb_run.log({
-                    "train_loss": train_loss,
-                    "val_loss": val_loss,
-                })
-            else:
-                print(f"Epoch {epoch}: train_loss: {train_loss:.4f}, val_loss: {val_loss:.4f}")
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                torch.save({
-                        "state_dict": fm_model.state_dict(),
-                        "config": asdict(fm_config),
-                        "conditions": fm_config.conditions,
-                        "val_loss": best_val_loss
-                    }, checkpoint_path)
     
-    print(f"Training completed. Best val loss: {best_val_loss:.4f}\n\n")
+    fm_model = train_model(train_embed_dl, val_embed_dl, fm_model, wandb_run, args.epochs, checkpoint_path)
 
     # ==============================================
     # Make predictions for plots
@@ -198,7 +196,7 @@ if __name__ == "__main__":
     # Plot predictions (except for cross sections)
     # ==============================================
 
-    plot_folder = f"figures/flow_matching/{args.ot_method}/{sigma_name}_{model_name}"
+    plot_folder = f"figures/flow_matching/{args.ot_method}/{path_prefix}{sigma_name}_{model_name}"
     if args.save_plots or wandb_run is None: os.makedirs(plot_folder, exist_ok=True)
 
     metrics = {}
@@ -251,31 +249,36 @@ if __name__ == "__main__":
     # Plot cross-section for label if available
     # ==============================================
 
-    if "label" in args.labels:
+    if "label" in args.labels or "log_label" in args.labels:
         fig, (lin_ax, fm_ax) = plt.subplots(1, 2, figsize=(12, 6))
+        key = "label" if "label" in args.labels else "log_label"
 
+        min_x = min(lin_preds[key].min(), vf_preds[key].min())
+        max_x = max(lin_preds[key].max(), vf_preds[key].max())
 
         plot_cross_section_histogram(lin_ax,
-            val_cond["label"], lin_preds["label"], 
+            val_cond[key], lin_preds[key], 
+            bin_range=(min_x, max_x),
             pred_method_name="Linear Regression")
         
         plot_cross_section_histogram(fm_ax,
-            val_cond["label"], vf_preds["label"], 
+            val_cond[key], vf_preds[key], 
+            bin_range=(min_x, max_x),
             pred_method_name="Flow Matching + Linear Regression")
         
         if wandb_run is not None:
             wandb_run.log({f"label_predictions": wandb.Image(fig)})
         if args.save_plots or wandb_run is None:
-            fig.savefig(f"{plot_folder}/label_predictions.png", dpi=300)
-            print("Saved plot for label predictions.")
+            fig.savefig(f"{plot_folder}/{key}_predictions.png", dpi=300)
+            print(f"Saved plot for {key} predictions.")
         
         plt.close(fig)
 
-        mse = mean_squared_error(val_cond["label"], vf_preds["label"])
-        r2 = r2_score(val_cond["label"], vf_preds["label"])
+        mse = mean_squared_error(val_cond[key], vf_preds[key])
+        r2 = r2_score(val_cond[key], vf_preds[key])
 
-        metrics["label_mse"] = mse
-        metrics["label_r2"] = r2
+        metrics[key + "_mse"] = mse
+        metrics[key + "_r2"] = r2
 
     # ==============================================
     # Plot UMAP projections of embeddings
@@ -312,3 +315,30 @@ if __name__ == "__main__":
         for metric_name, metric_vals in metrics.items():
             wandb_run.summary[metric_name] = metric_vals
         wandb_run.finish()
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(
+                    prog='GenAstroPT',
+                    description='Trains a flow matching model on astroPT embeddings')
+    parser.add_argument('--nb_points', type=int, default=7000, help='Number of points to use for embeddings')
+    parser.add_argument('--labels', nargs='+', default=["mass", "label"], help='Labels to use for the conditions of the flow matching model')
+    parser.add_argument('--model_path', type=str, default="model/ckpt.pt", help='Path to the astropt checkpoint')
+    parser.add_argument('--epochs', type=int, default=3000, help='Number of training epochs')
+    
+    parser.add_argument('--sigma', type=float, default=0.1, help='Sigma value for the flow matching model')
+    parser.add_argument('--ot_method', type=str, default="default", help='Optimal transport method to use')
+
+    parser.add_argument('--path_prefix', type=str, default="", help='Path prefix for saving the model and plots')
+    parser.add_argument('--save_plots', action='store_true', help='Whether to save plots locally')
+    parser.add_argument('--use_wandb', action='store_true', help='Whether to use wandb for logging')
+    args = parser.parse_args()
+    
+    np.random.seed(42)
+    torch.manual_seed(42)
+    device = torch.device('mps' if torch.backends.mps.is_available() else 
+                          'cuda' if torch.cuda.is_available() else 
+                          'cpu')
+    
+    main(args, device)

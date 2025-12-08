@@ -55,11 +55,22 @@ class LinearRegression:
 @dataclass
 class VectorFieldConfig:
     sigma: float = 1.0
-    dim: int = 128
-    encoding_size: int = 64
-    hidden: int = 512
+    dim: int = 768
+    encoding_size: int = 128
     ot_method: str = "default"
     conditions: list[str] = field(default_factory=list)
+    min_cond: torch.Tensor = None
+    max_cond: torch.Tensor = None
+
+class OneBlobEncoding(nn.Module):
+    def __init__(self, encoding_size: int):
+        super().__init__()
+        self.encoding_size = encoding_size
+
+    def forward(self, x):
+        x = x.unsqueeze(-1)
+        bins = torch.linspace(0, 1, self.encoding_size, device=x.device)
+        return torch.exp(-0.5 * ((x - bins.unsqueeze(0)) * self.encoding_size) ** 2)
 
 class VectorField(nn.Module):
     
@@ -85,26 +96,34 @@ class VectorField(nn.Module):
             case _:
                 raise ValueError(f"Unknown ot_method: {config.ot_method}")
 
+        self.encoders = nn.ModuleDict({
+            cond: nn.Sequential(
+                OneBlobEncoding(encoding_size=2*config.encoding_size//3),
+                nn.Linear(2*config.encoding_size//3, config.encoding_size),
+                nn.SiLU(),
+                nn.Linear(config.encoding_size, config.encoding_size),
+            ) for cond in [*config.conditions, "time"]
+        })
     
-        self.config = config
-        self.encoding_net = nn.Sequential(
-            nn.Linear(len(config.conditions), config.encoding_size//2),
-            nn.SiLU(),
-            nn.Linear(config.encoding_size//2, config.encoding_size),
-            nn.SiLU()
-        )
-    
-        self.net = nn.Sequential(
-            nn.Linear(config.dim + config.encoding_size + 1, config.hidden),
-            nn.SiLU(),
-            nn.Linear(config.hidden, config.hidden),
-            nn.SiLU(),
-            nn.Linear(config.hidden, config.hidden),
-            nn.SiLU(),
-            nn.Linear(config.hidden, config.dim)
-        )
+        input_size = config.dim + config.encoding_size
+        hidden_size = input_size
+        self.blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.LayerNorm(input_size, bias=True),
+                nn.Linear(input_size, hidden_size),
+                nn.SiLU(),
+                nn.Linear(hidden_size, hidden_size),
+                nn.SiLU(),
+                nn.Linear(hidden_size, hidden_size),
+                nn.SiLU(),
+                nn.Dropout(0.5)
+            ) for _ in range(6)
+        ])
 
+        self.head = nn.Linear(hidden_size, config.dim)
+        
         self._init_weights()
+        self.config = config
 
     def _init_weights(self):
         for m in self.modules():
@@ -113,14 +132,35 @@ class VectorField(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
-    def forward(self, x, cond, t):
-        encoding = self.encoding_net(cond)
-        return self.net(torch.cat([x, encoding, t], dim=-1))
+        nn.init.zeros_(self.head.weight)
+        nn.init.zeros_(self.head.bias)
+
+    def forward(self, t: torch.Tensor, input: tuple[torch.Tensor, torch.Tensor]):
+        x, cond = input
+
+        if self.config.min_cond is None and self.config.max_cond is None:
+            self.config.min_cond = torch.min(cond, dim=0).values
+            self.config.max_cond = torch.max(cond, dim=0).values
+
+        # Normalize conditions to [0, 1]
+        cond = (cond - self.config.min_cond) / (self.config.max_cond - self.config.min_cond + 1e-8)
+
+        encodings = torch.as_tensor(0, device=x.device)
+        for key_idx, key in enumerate(self.config.conditions):
+            encodings = encodings + self.encoders[key](cond[:, key_idx])
+        encodings += self.encoders["time"](t)
+        encodings = encodings / (len(self.config.conditions) + 1)
+
+        mlp_input = torch.cat([x, encodings], dim=-1)
+        for block in self.blocks:
+            mlp_input = mlp_input + block(mlp_input)
+
+        return (self.head(mlp_input), cond)
 
 
     def compute_loss(self, x0, x1, cond):
         t, xt, ut = self.solver.sample_location_and_conditional_flow(x0, x1)
-        return F.mse_loss(self(xt, cond, t.view(-1, 1)), ut)
+        return F.mse_loss(self(t, (xt, cond))[0], ut)
 
 
     @torch.no_grad()
@@ -129,14 +169,14 @@ class VectorField(nn.Module):
         Integrates dx/dt = v_theta(x, t) from t=0 to 1.
         Start from simple noise distribution.
         """
-        dt = 1.0 / steps
         batch_size = cond.size(0)
+        dt = 1 / steps
 
-        t = torch.zeros(batch_size, 1, device=cond.device)
+        t = torch.as_tensor(0.0, device=cond.device)
         x = torch.randn(batch_size, self.config.dim, device=cond.device)
 
         for _ in range(steps):
-            x += dt * self(x, cond, t)
+            x += dt * self(t, (x, cond))[0]
             t += dt
 
         return x

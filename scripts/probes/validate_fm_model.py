@@ -47,6 +47,9 @@ def main(args, device):
 
     # ============== Compute embeddings =================
     embeddings, labels = compute_embeddings(astropt_model, dl, device, merged_labels)
+    del dataset, dl, astropt_model
+    torch.cuda.empty_cache()
+
     lin_reg = LinearRegression(device).fit(embeddings, 
                 torch.stack([labels[label_name] for label_name in fm_model.config.conditions], dim=1))
 
@@ -57,7 +60,7 @@ def main(args, device):
 
     while True:
         conditions = query_conditions(fm_model.config.conditions).to(device)
-        conditions = conditions.unsqueeze(0).repeat(embeddings.size(0), 1)
+        conditions = conditions.unsqueeze(0).repeat(args.nb_gen_points, 1)
 
         # ============== Predict and plot =================
         fm_embeddings = fm_model.sample_flow(conditions, steps=args.nb_steps)
@@ -129,8 +132,10 @@ if __name__ == "__main__":
                             help="Path to the AstroPT model to use as reference")
     argparser.add_argument("--nb_steps", type=int, default=500,
                             help="Number of sampling steps for the Flow Matching model")
-    argparser.add_argument("--nb_points", type=int, default=1000,
+    argparser.add_argument("--nb_points", type=int, default=14000,
                             help="Number of points to use for validation")
+    argparser.add_argument("--nb_gen_points", type=int, default=6000,
+                            help="Number of points to generate with the Flow Matching model")
     argparser.add_argument("--labels", nargs='+', default=["mass", "label"], help="Physical quantities to plot")
     args = argparser.parse_args()
 
