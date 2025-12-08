@@ -47,9 +47,16 @@ def spiralise(galaxy):
             else np.stack(spiraled)
         )
 
-def fetch_dataset(dataset_path: str, feature_names: list[str], stack_features: bool):
+def fetch_dataset(dataset_path: str, feature_names: list[str], stack_features: bool,image_only: bool = False):
 
     cache_file_path = f"cache/{'.'.join(dataset_path.split('/')[-1].split('.')[:-1])}"
+    
+    if(image_only):
+        with open(dataset_path, 'rb') as f:
+            metadata, images = pickle.load(f)
+            images = images[:, 0:1, :, :]
+        
+        return Dataset.from_dict({"image": images})
 
     if not os.path.isdir(cache_file_path):
         
@@ -153,8 +160,8 @@ def fetch_dataset(dataset_path: str, feature_names: list[str], stack_features: b
 
     return ds
 
-def merge_datasets(datasets: list[str], feature_names: list[str], stack_features: bool) -> Dataset:
-    return concatenate_datasets([fetch_dataset(path, feature_names, stack_features) for path in datasets])
+def merge_datasets(datasets: list[str], feature_names: list[str], stack_features: bool, image_only: bool = False) -> Dataset:
+    return concatenate_datasets([fetch_dataset(path, feature_names, stack_features,image_only=image_only) for path in datasets])
 
 @torch.no_grad()
 def compute_embeddings(model, dataloader, device: torch.device, label_names: list[str],

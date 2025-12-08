@@ -1,6 +1,7 @@
 .vscode/
 
 .venv/
+.astro/
 env/
 venv/
 __pycache__/
@@ -16,3 +17,5 @@ cache/
 logs/
 figures/
 model/
+
+results_diffusion/
