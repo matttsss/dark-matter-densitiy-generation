@@ -160,7 +160,7 @@ def fetch_dataset(dataset_path: str, feature_names: list[str], stack_features: b
 
     return ds
 
-def merge_datasets(datasets: list[str], feature_names: list[str], stack_features: bool, image_only: bool = False) -> Dataset:
+def merge_datasets(datasets: list[str], feature_names: list[str] = ["mass","label"], stack_features: bool = False, image_only: bool = False) -> Dataset:
     return concatenate_datasets([fetch_dataset(path, feature_names, stack_features,image_only=image_only) for path in datasets])
 
 @torch.no_grad()
