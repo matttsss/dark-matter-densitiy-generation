@@ -63,13 +63,14 @@ def main(args, device):
         conditions = conditions.unsqueeze(0).repeat(args.nb_gen_points, 1)
 
         # ============== Predict and plot =================
-        fm_embeddings = fm_model.sample_flow(conditions, steps=args.nb_steps)
+        fm_embeddings = fm_model.sample_flow(conditions)
         preds = lin_reg.predict(fm_embeddings).cpu().numpy()
         conditions = conditions.cpu().numpy()
 
         file_suffix = "_".join([f"{name}_{conditions[0,i]:.2f}" for i, name in enumerate(fm_model.config.conditions)]).replace(".", "_")
 
 
+        print(preds.mean(axis=0))
         mse = np.mean((preds - conditions)**2)
 
         fig, ax = plt.subplots(figsize=(8, 6))

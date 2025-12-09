@@ -1,0 +1,193 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from torchdiffeq import odeint
+from dataclasses import dataclass, field
+
+from .hash_grid_encoding import MultiResHashGrid
+
+from torchcfm.conditional_flow_matching import (
+    ConditionalFlowMatcher,
+    TargetConditionalFlowMatcher,
+    VariancePreservingConditionalFlowMatcher,
+    ExactOptimalTransportConditionalFlowMatcher,
+    SchrodingerBridgeConditionalFlowMatcher,
+    OTPlanSampler
+)
+
+def divergence_hutchinson(v, x):
+    """
+    v : vector field output v_theta(x), shape [B, D]
+    x : input point, requires_grad=True, shape [B, D]
+    """
+    eps = torch.randn_like(x)     # Gaussian or Rademacher both work
+
+    # Jv = Jacobian-vector product: (dv/dx) * eps
+    Jv = torch.autograd.grad(
+        outputs=v,
+        inputs=x,
+        grad_outputs=eps,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True
+    )[0]
+
+    # Divergence ≈ eps^T * J * eps
+    div = (Jv * eps).sum(dim=1)   # shape [B]
+    return div
+
+
+@dataclass
+class VectorFieldConfig:
+    sigma: float = 1.0
+    dim: int = 768
+    encoding_size: int = 64
+    ot_method: str = "default"
+    conditions: list[str] = field(default_factory=list)
+
+class OneBlobEncoding(nn.Module):
+    def __init__(self, encoding_size: int):
+        super().__init__()
+        self.encoding_size = encoding_size
+
+    def forward(self, x):
+        x = x.unsqueeze(-1)
+        bins = torch.linspace(0, 1, self.encoding_size, device=x.device)
+        return torch.exp(-0.5 * ((x - bins.unsqueeze(0)) * self.encoding_size) ** 2)
+
+class SinusoidalEncoding(nn.Module):
+
+    def __init__(self, dim: int, dropout: float = 0.1):
+        super().__init__()
+        assert dim % 2 == 0, "Dimension must be even."
+        self.dim = dim
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        reg = 500
+        omega = torch.arange(self.dim // 2, dtype=torch.float32, device=x.device)
+        omega /= self.dim / 2.
+        omega = 1. / reg**omega
+        
+        pos = x.reshape(-1)
+        out = torch.einsum('m,d->md', pos, omega)
+        
+        emb_sin = torch.sin(out)
+        emb_cos = torch.cos(out)
+        return torch.cat([emb_sin, emb_cos], dim=1)
+
+class ResidualBlock(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+
+        self.fc1 = nn.Linear(dim, dim * 2)
+        self.layer_norm_1 = nn.LayerNorm(dim * 2)
+        self.activation = nn.SiLU()
+
+        self.fc2 = nn.Linear(dim * 2, dim)
+        self.layer_norm_2 = nn.LayerNorm(dim)
+
+
+    def forward(self, x):
+
+        h = self.fc1(x)
+        h = self.layer_norm_1(h)
+        h = self.activation(h)
+
+        h = self.fc2(h)
+        h = self.layer_norm_2(h)
+
+        h = h + x
+
+        return self.activation(h)
+
+
+class VectorField(nn.Module):
+    def __init__(self, config: VectorFieldConfig, hidden_dim=1024, num_layers=8, num_threads=4):
+        super().__init__()
+  
+        match config.ot_method:
+            case "default":
+                self.solver = ConditionalFlowMatcher(config.sigma)
+            case "target":
+                self.solver = TargetConditionalFlowMatcher(config.sigma)
+            case "variance_preserving":
+                self.solver = VariancePreservingConditionalFlowMatcher(config.sigma)
+            case "exact":
+                self.solver = ExactOptimalTransportConditionalFlowMatcher(config.sigma)
+                # Update number of available threads
+                self.solver.ot_sampler = OTPlanSampler("exact", num_threads=num_threads)
+            case "schrodinger":
+                self.solver = SchrodingerBridgeConditionalFlowMatcher(config.sigma)
+                # Update number of available threads
+                self.solver.ot_sampler = OTPlanSampler(method=self.solver.ot_method, 
+                                                       reg=2 * config.sigma**2, num_threads=num_threads)
+            case _:
+                raise ValueError(f"Unknown ot_method: {config.ot_method}")
+
+        self.in_proj = nn.Linear(config.dim, hidden_dim)
+        self.hash_grid = MultiResHashGrid(
+            dim=3,
+            n_levels=16,
+            n_features_per_level=8
+        )
+
+        print(f"Hash grid output dim: {self.hash_grid.output_dim}")
+
+        # residual layers
+        input_dim = self.hash_grid.output_dim
+        self.cond_mlp = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim * 2)
+        )
+
+
+        self.layers = nn.ModuleList([
+            ResidualBlock(hidden_dim)
+            for _ in range(num_layers)
+        ])
+
+        self.out_proj = nn.Linear(hidden_dim, config.dim)
+        self.config = config
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain('relu'))
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
+
+    def forward(self, t, x, cond):        
+        t = t.unsqueeze(-1) if t.dim() == 1 else t.expand(x.shape[0], 1)
+        
+        encoded_params = torch.cat([cond, t], dim=-1)
+        encoded_params = self.hash_grid(encoded_params)
+
+        gamma_beta = self.cond_mlp(encoded_params)
+        gamma, beta = gamma_beta.chunk(2, dim=-1)
+
+        h = self.in_proj(x)
+
+        # residual blocks with FiLM modulation
+        for block in self.layers:
+            h_norm = block(h)
+            h = h_norm * gamma + beta
+
+        return self.out_proj(h)
+
+    @torch.no_grad()
+    def sample_flow(self, cond):
+        from functools import partial
+        """
+        Integrates dx/dt = v_theta(x, t) from t=0 to 1.
+        Start from simple noise distribution.
+        """
+        batch_size = cond.size(0)
+        x = torch.randn(batch_size, self.config.dim, device=cond.device)
+        x = odeint(partial(self, cond=cond), x, torch.as_tensor([0.0, 1.0], device=cond.device), atol=1e-5, rtol=1e-5)
+        return x[-1]

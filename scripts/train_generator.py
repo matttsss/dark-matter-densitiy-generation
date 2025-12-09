@@ -10,14 +10,15 @@ import argparse, wandb, os
 import matplotlib.pyplot as plt
 
 import torch
-from torchdiffeq import odeint_adjoint
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from umap import UMAP
 from dataclasses import asdict
 from sklearn.metrics import mean_squared_error, r2_score
 
-from scripts.model_utils import VectorField, VectorFieldConfig, LinearRegression, load_astropt_model
+from flow_model.vector_field import VectorField, VectorFieldConfig
+from scripts.model_utils import RunningAverageMeter, LinearRegression, load_astropt_model, load_fm_model
 from scripts.plot_utils import plot_cross_section_histogram
 from scripts.embedings_utils import merge_datasets, compute_embeddings
 
@@ -54,25 +55,34 @@ def get_datasets(model_path, label_names, split_ratio=0.8, nb_points=14000):
 
     return (train_embeddings, val_embeddings), (train_cond, val_cond)
 
+def compute_loss(fm_model: VectorField, x0, x1, cond):
+    t, xt, ut = fm_model.solver.sample_location_and_conditional_flow(x0, x1)
+    return F.mse_loss(fm_model(t, xt, cond), ut)
+
+def sample_batch(data_loader, device):
+    for x1, cond in data_loader:
+        x1 = x1.to(device)
+        cond = cond.to(device)
+        x0 = torch.randn_like(x1, device=device)  
+
+        yield x0, x1, cond
+
 def train_model(train_dl: DataLoader, val_dl: DataLoader, fm_model: VectorField, 
                 wandb_run, epochs, checkpoint_path) -> VectorField:
-    opt = torch.optim.AdamW(fm_model.parameters(), lr=1e-4)
-
-    # gaussian = torch.distributions.normal.Normal(
-    #     loc=torch.zeros(fm_model.config.dim, device=),
-    #     scale=torch.ones(fm_model.config.dim, device=fm_model.device)
-    # )
+    
+    train_avg_meter = RunningAverageMeter() 
+    val_avg_meter = RunningAverageMeter() 
+    opt = torch.optim.AdamW(fm_model.parameters(), lr=1e-3)
 
     best_model = None
     best_val_loss = float('inf')
     for epoch in range(epochs):
-        train_loss = 0.0
-        for x1, cond in train_dl:
-            x1 = x1.to(device)
-            cond = cond.to(device)
 
-            x0 = torch.randn_like(x1)
-            loss = fm_model.compute_loss(x0, x1, cond)
+        fm_model.train()
+        train_loss = 0.0
+        for x0, x1, cond in sample_batch(train_dl, device):
+
+            loss = compute_loss(fm_model, x0, x1, cond)
 
             opt.zero_grad()
             loss.backward()
@@ -82,17 +92,18 @@ def train_model(train_dl: DataLoader, val_dl: DataLoader, fm_model: VectorField,
 
         train_loss /= len(train_dl)
 
+        fm_model.eval()
         val_loss = 0.0
-        for x1, cond in val_dl:
-            x1 = x1.to(device)
-            cond = cond.to(device)
+        for x0, x1, cond in sample_batch(val_dl, device):
 
-            x0 = torch.randn_like(x1)
-            loss = fm_model.compute_loss(x0, x1, cond)
+            loss = compute_loss(fm_model, x0, x1, cond)
 
             val_loss += loss.item()
 
         val_loss /= len(val_dl)
+
+        train_avg_meter.update(train_loss)
+        val_avg_meter.update(val_loss)
         
         if epoch % 10 == 0:
             if wandb_run is not None:
@@ -101,11 +112,11 @@ def train_model(train_dl: DataLoader, val_dl: DataLoader, fm_model: VectorField,
                     "val_loss": val_loss,
                 })
             else:
-                print(f"Epoch {epoch}: train_loss: {train_loss:.4f}, val_loss: {val_loss:.4f}")
+                print(f"Epoch {epoch}: train_loss: {train_avg_meter.avg:.9f}, val_loss: {val_avg_meter.avg:.9f}")
 
-            if val_loss < best_val_loss:
+            if val_avg_meter.avg < best_val_loss:
                 best_model = fm_model.state_dict()
-                best_val_loss = val_loss
+                best_val_loss = val_avg_meter.avg
                 torch.save({
                         "state_dict": best_model,
                         "config": asdict(fm_model.config),
@@ -175,8 +186,11 @@ def main(args, device):
     )
     fm_model = VectorField(fm_config, num_threads=4).to(device)
     
-    fm_model = train_model(train_embed_dl, val_embed_dl, fm_model, wandb_run, args.epochs, checkpoint_path)
-
+    try:
+        fm_model = train_model(train_embed_dl, val_embed_dl, fm_model, wandb_run, args.epochs, checkpoint_path)
+    except KeyboardInterrupt:
+        print("Training interrupted. Proceeding to validation with current model.")
+        fm_model = load_fm_model(checkpoint_path, device=device, strict=False)
     # ==============================================
     # Make predictions for plots
     # ==============================================
@@ -184,7 +198,7 @@ def main(args, device):
     lin_reg = LinearRegression(device).fit(train_embeddings, train_cond)
     lin_preds = lin_reg.predict(val_embeddings).cpu().numpy()
 
-    vf_embeddings = fm_model.sample_flow(val_cond, steps=int(1e4))
+    vf_embeddings = fm_model.sample_flow(val_cond)
     vf_preds = lin_reg.predict(vf_embeddings).cpu().numpy()
 
     lin_preds = {label_name: lin_preds[:, i] for i, label_name in enumerate(fm_model.config.conditions)}
