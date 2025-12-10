@@ -101,13 +101,15 @@ def batch_to_device(batch, device):
 class RunningAverageMeter(object):
     """Computes and stores the average and current value"""
 
-    def __init__(self, momentum=0.99):
+    def __init__(self, momentum=0.99, keep_all=False):
         self.momentum = momentum
+        self.losses = [] if keep_all else None
         self.reset()
 
     def reset(self):
         self.val = None
         self.avg = 0
+        self.losses = [] if self.losses is not None else None
 
     def update(self, val):
         if self.val is None:
@@ -115,3 +117,7 @@ class RunningAverageMeter(object):
         else:
             self.avg = self.avg * self.momentum + val * (1 - self.momentum)
         self.val = val
+    
+    def register_loss(self, val):
+        if self.losses is not None:
+            self.losses.append(val)

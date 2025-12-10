@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 
 import torch
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
 
 from umap import UMAP
@@ -38,7 +39,7 @@ def get_datasets(model_path, label_names, split_ratio=0.8, nb_points=14000):
     has_metals = device.type == 'mps'
     dl = DataLoader(
         dataset,
-        batch_size = 64 if has_metals else 256,
+        batch_size = 64 if has_metals else 512,
         num_workers = 0 if has_metals else 4,
         prefetch_factor = None if has_metals else 3
     )
@@ -56,8 +57,14 @@ def get_datasets(model_path, label_names, split_ratio=0.8, nb_points=14000):
 
     return (train_embeddings, val_embeddings), (train_cond, val_cond)
 
-def compute_loss(fm_model: VectorField, x0, x1, cond):
-    t, xt, ut = fm_model.solver.sample_location_and_conditional_flow(x0, x1)
+def compute_loss(fm_model: VectorField, x0, x1, cond, multiplicator: int = 1):
+    if multiplicator > 1:
+        x0 = x0.repeat(multiplicator, 1)
+        x1 = x1.repeat(multiplicator, 1)
+        cond = cond.repeat(multiplicator, 1)
+
+    t = torch.rand(x0.size(0), device=x0.device)
+    t, xt, ut = fm_model.solver.sample_location_and_conditional_flow(x0, x1, t)
     return F.mse_loss(fm_model(t, xt, cond), ut)
 
 def sample_batch(data_loader, device):
@@ -69,11 +76,12 @@ def sample_batch(data_loader, device):
         yield x0, x1, cond
 
 def train_model(train_dl: DataLoader, val_dl: DataLoader, fm_model: VectorField, 
-                wandb_run, epochs, checkpoint_path) -> VectorField:
-    
-    train_avg_meter = RunningAverageMeter() 
-    val_avg_meter = RunningAverageMeter() 
-    opt = torch.optim.AdamW(fm_model.parameters(), lr=1e-3)
+                wandb_run: wandb.Run | None, epochs: int,
+                batch_scale: int, checkpoint_path) -> VectorField:
+    opt = torch.optim.AdamW(fm_model.parameters(), lr=5e-4)
+    scheduler = CosineAnnealingLR(opt, T_max=epochs)
+
+    global train_avg_meter, val_avg_meter
 
     best_model = None
     best_val_loss = float('inf')
@@ -83,7 +91,7 @@ def train_model(train_dl: DataLoader, val_dl: DataLoader, fm_model: VectorField,
         train_loss = 0.0
         for x0, x1, cond in sample_batch(train_dl, device):
 
-            loss = compute_loss(fm_model, x0, x1, cond)
+            loss = compute_loss(fm_model, x0, x1, cond, batch_scale)
 
             opt.zero_grad()
             loss.backward()
@@ -97,7 +105,7 @@ def train_model(train_dl: DataLoader, val_dl: DataLoader, fm_model: VectorField,
         val_loss = 0.0
         for x0, x1, cond in sample_batch(val_dl, device):
 
-            loss = compute_loss(fm_model, x0, x1, cond)
+            loss = compute_loss(fm_model, x0, x1, cond, batch_scale)
 
             val_loss += loss.item()
 
@@ -105,16 +113,21 @@ def train_model(train_dl: DataLoader, val_dl: DataLoader, fm_model: VectorField,
 
         train_avg_meter.update(train_loss)
         val_avg_meter.update(val_loss)
+        scheduler.step()
         
         if epoch % 10 == 0:
             if wandb_run is not None:
                 wandb_run.log({
                     "train_loss": train_loss,
                     "val_loss": val_loss,
+                    "learning_rate": scheduler.get_last_lr()[0]
                 })
             else:
                 print(f"Epoch {epoch}: train_loss: {train_avg_meter.avg:.9f}, val_loss: {val_avg_meter.avg:.9f}")
 
+            train_avg_meter.register_loss(train_loss)
+            val_avg_meter.register_loss(val_loss)
+            
             if val_avg_meter.avg < best_val_loss:
                 best_model = fm_model.state_dict()
                 best_val_loss = val_avg_meter.avg
@@ -180,17 +193,27 @@ def main(args, device):
     val_embed_dl = DataLoader(TensorDataset(val_embeddings, val_cond), 
                               batch_size=nb_embeddings - nb_train)
     
-    fm_config = VectorFieldConfig(
-        sigma=args.sigma,
-        dim=embeddings_dim,
-        encoding_size=args.encoding_size,
-        ot_method=args.ot_method,
-        conditions=args.labels
-    )
-    fm_model = VectorField(fm_config, num_threads=4).to(device)
+    if args.checkpoint and os.path.exists(args.checkpoint):
+        print(f"Loading model from checkpoint: {args.checkpoint}")
+        fm_model = load_fm_model(args.checkpoint, device=device, strict=False)
+    else:
+        fm_config = VectorFieldConfig(
+            sigma=args.sigma,
+            dim=embeddings_dim,
+            encoding_size=args.encoding_size,
+            ot_method=args.ot_method,
+            conditions=args.labels
+        )
+        fm_model = VectorField(fm_config, num_threads=4).to(device)
     
+    # Global to bypass interupts
+    global train_avg_meter, val_avg_meter
+    train_avg_meter = RunningAverageMeter(keep_all=True) 
+    val_avg_meter = RunningAverageMeter(keep_all=True) 
+
     try:
-        fm_model = train_model(train_embed_dl, val_embed_dl, fm_model, wandb_run, args.epochs, checkpoint_path)
+        fm_model = train_model(train_embed_dl, val_embed_dl, fm_model, wandb_run,
+                               args.epochs, args.batch_scale, checkpoint_path)
     except KeyboardInterrupt:
         print("Training interrupted. Proceeding to validation with current model.")
         fm_model = load_fm_model(checkpoint_path, device=device, strict=False)
@@ -208,6 +231,24 @@ def main(args, device):
     vf_preds = {cond_name: vf_preds[:, i] for i, cond_name in enumerate(fm_model.config.conditions)}
     val_cond = {label_name: val_cond[:, i].cpu().numpy() for i, label_name in enumerate(fm_model.config.conditions)}
 
+
+    # ==============================================
+    # Plot training curves
+    # ==============================================
+    if wandb_run is None:
+        cutoff = 15
+
+        fig, ax = plt.subplots()
+        ax.plot(train_avg_meter.losses[cutoff:], label='Train Loss')
+        ax.plot(val_avg_meter.losses[cutoff:], label='Val Loss')
+        ax.set_xlabel('Epochs')
+        ax.set_ylabel('Loss')
+        ax.set_title('Training and Validation Loss over Epochs')
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig("figures/losses.png", dpi=300)
+        plt.show()
+        plt.close(fig)
 
     # ==============================================
     # Plot predictions (except for cross sections)
@@ -343,6 +384,7 @@ if __name__ == "__main__":
     parser.add_argument('--labels', nargs='+', default=["mass", "label"], help='Labels to use for the conditions of the flow matching model')
     parser.add_argument('--model_path', type=str, default="model/ckpt.pt", help='Path to the astropt checkpoint')
     parser.add_argument('--epochs', type=int, default=3000, help='Number of training epochs')
+    parser.add_argument('--batch_scale', type=int, default=20, help='Batch scales the batches to get more time samples per batch    ')
     
     parser.add_argument('--sigma', type=float, default=0.1, help='Sigma value for the flow matching model')
     parser.add_argument('--ot_method', type=str, default="default", help='Optimal transport method to use')
@@ -351,6 +393,7 @@ if __name__ == "__main__":
     parser.add_argument('--path_prefix', type=str, default="", help='Path prefix for saving the model and plots')
     parser.add_argument('--save_plots', action='store_true', help='Whether to save plots locally')
     parser.add_argument('--use_wandb', action='store_true', help='Whether to use wandb for logging')
+    parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint to load model from')
     args = parser.parse_args()
     
     np.random.seed(42)
