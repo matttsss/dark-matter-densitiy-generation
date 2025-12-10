@@ -47,11 +47,12 @@ def spiralise(galaxy):
             else np.stack(spiraled)
         )
 
-def fetch_dataset(dataset_path: str, feature_names: list[str], stack_features: bool,image_only: bool = False):
+def fetch_dataset(dataset_path: str, feature_names: list[str], 
+                  stack_features: bool, image_only: bool = False) -> Dataset:
 
     cache_file_path = f"cache/{'.'.join(dataset_path.split('/')[-1].split('.')[:-1])}"
     
-    if(image_only):
+    if (image_only):
         with open(dataset_path, 'rb') as f:
             metadata, images = pickle.load(f)
             images = images[:, 0:1, :, :]
@@ -144,7 +145,7 @@ def fetch_dataset(dataset_path: str, feature_names: list[str], stack_features: b
     if "log_label" in feature_names:
         ds = ds.map(lambda row: {
             **row,
-            "log_label": torch.log(row["label"]),
+            "log_label": torch.log10(row["label"]),
         })
         if "label" not in feature_names:
             collumns_to_remove.append("label")
@@ -160,8 +161,38 @@ def fetch_dataset(dataset_path: str, feature_names: list[str], stack_features: b
 
     return ds
 
-def merge_datasets(datasets: list[str], feature_names: list[str] = ["mass","label"], stack_features: bool = False, image_only: bool = False) -> Dataset:
+def merge_datasets(
+        datasets: list[str], feature_names: list[str] = ["mass","label"], 
+        stack_features: bool = False, image_only: bool = False) -> Dataset:
     return concatenate_datasets([fetch_dataset(path, feature_names, stack_features,image_only=image_only) for path in datasets])
+
+def normalize_features(
+        dataset: Dataset, feature_names: list[str], val_dataset: Dataset | None = None) -> Dataset | tuple[Dataset, Dataset]:
+    """Normalizes the features in feature_names to have zero mean and unit variance.
+    The normalization is done per feature over the entire dataset.
+    """
+
+    # Compute mean and std per feature
+    feature_means = {}
+    feature_stds = {}
+    for feature in feature_names:
+        all_values = torch.as_tensor(np.array(dataset[feature]))
+        feature_means[feature] = torch.mean(all_values, dim=0)
+        feature_stds[feature] = torch.std(all_values, dim=0)
+
+    # Apply normalization
+    def normalize_row(row):
+        for feature in feature_names:
+            row[feature] = (row[feature] - feature_means[feature]) / (feature_stds[feature] + 1e-8)
+        return row
+
+    normalized_dataset = dataset.map(normalize_row)
+
+    if val_dataset is not None:
+        normalized_val_dataset = val_dataset.map(normalize_row)
+        return normalized_dataset, normalized_val_dataset
+    
+    return normalized_dataset
 
 @torch.no_grad()
 def compute_embeddings(model, dataloader, device: torch.device, label_names: list[str],

@@ -157,6 +157,7 @@ def main(args, device):
                 "conditions": args.labels,
                 "sigma": args.sigma,
                 "ot_method": args.ot_method,
+                "encoding_size": args.encoding_size,
                 "astropt_model": model_name
             }
         )
@@ -182,6 +183,7 @@ def main(args, device):
     fm_config = VectorFieldConfig(
         sigma=args.sigma,
         dim=embeddings_dim,
+        encoding_size=args.encoding_size,
         ot_method=args.ot_method,
         conditions=args.labels
     )
@@ -344,6 +346,7 @@ if __name__ == "__main__":
     
     parser.add_argument('--sigma', type=float, default=0.1, help='Sigma value for the flow matching model')
     parser.add_argument('--ot_method', type=str, default="default", help='Optimal transport method to use')
+    parser.add_argument('--encoding_size', type=int, default=64, help='Size of the hash grid encoding')
 
     parser.add_argument('--path_prefix', type=str, default="", help='Path prefix for saving the model and plots')
     parser.add_argument('--save_plots', action='store_true', help='Whether to save plots locally')

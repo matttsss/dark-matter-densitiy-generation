@@ -3,6 +3,7 @@ Example script that samples from a trained astropt model and finetunes
 embeddings on a linear probe
 """
 
+import os
 import numpy as np
 import torch, argparse
 import matplotlib.pyplot as plt
@@ -26,6 +27,7 @@ if __name__ == "__main__":
     parser.add_argument('--nb_points', type=int, default=1000, help='Number of points to use for embeddings')
     parser.add_argument('--labels', nargs='+', default=["mass"], help='Labels to use for embeddings')
     parser.add_argument('--model_path', type=str, default="model/ckpt.pt", help='Path to the model checkpoint')
+    parser.add_argument('--output_path', type=str, default="figures/finetuned", help='Path to save the output figures')
     args = parser.parse_args()
     
     labels_name = args.labels  
@@ -61,8 +63,11 @@ if __name__ == "__main__":
     labels = {k: v.cpu().numpy() for k, v in labels.items()}
 
     data_name = weights_filename.replace(".pt", "").split("/")[-1]
+    plot_out_path = args.output_path
+    if not os.path.exists(plot_out_path):
+        os.makedirs(plot_out_path, exist_ok=True)
     print(f"Plotting probes for {data_name} model...")
-    
+    print(f"Saving figures to {plot_out_path}")
 
     ## Start with UMAP projection
     umap = UMAP(n_components=2)
@@ -85,7 +90,7 @@ if __name__ == "__main__":
     fig = plot_labels(plot_probe, f"UMAP projection of {data_name} embeddings", list(labels.keys()),
                       umap_embeddings=umap_embeddings, labels_dict=labels)
 
-    fig.savefig(f"figures/umap_{data_name}_magnitudes.png", dpi=300)
+    fig.savefig(f"{plot_out_path}/{data_name}_umap_magnitudes.png", dpi=300)
     plt.show()
     plt.close(fig)
 
@@ -128,7 +133,7 @@ if __name__ == "__main__":
     fig = plot_labels(plot_probe_predictions, f"Normalized linear probe predictions of {data_name} embeddings", 
                       list(labels.keys()), embeddings=embeddings, labels_dict=labels)
     
-    fig.savefig(f"figures/{data_name}_pred.png", dpi=300)
+    fig.savefig(f"{plot_out_path}/{data_name}_pred.png", dpi=300)
     plt.show()
     plt.close(fig)
 
@@ -174,7 +179,7 @@ if __name__ == "__main__":
         ax.set_title(f"Cross-section distribution\nfor different labels in {data_name} model")
         ax.legend()
 
-        fig.savefig(f"figures/{data_name}_cross_section_distribution.png", dpi=300)
+        fig.savefig(f"{plot_out_path}/{data_name}_cross_section_distribution.png", dpi=300)
 
         plt.show()
         plt.close(fig)

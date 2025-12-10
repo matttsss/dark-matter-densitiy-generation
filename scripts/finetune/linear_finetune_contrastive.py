@@ -1,11 +1,11 @@
 import torch, wandb, argparse
-
+import numpy as np
 from tqdm.auto import tqdm
 from dataclasses import asdict
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from scripts.embedings_utils import merge_datasets, compute_embeddings
+from scripts.embedings_utils import merge_datasets, compute_embeddings, normalize_features
 from scripts.model_utils import LinearRegression, batch_to_device, load_astropt_model
 
 
@@ -89,6 +89,9 @@ argparser.add_argument("--num_epochs", type=int, default=60,
 argparser.add_argument("--label_names", type=str, nargs='+',
                        default=["mass", "label", "BCG_e1", "BCG_e2", "BCG_stellar_conc"],
                        help="List of label names for the task.")
+argparser.add_argument('--normalize_features', action='store_true',
+                       help="Whether to normalize features.")
+
 # contrastive-related
 argparser.add_argument("--contrastive_weight", type=float, default=0.1,
                        help="Max weight for supervised contrastive loss on the 'label' dimension.")
@@ -141,15 +144,18 @@ else:
 # Load datasets
 # ----------------------------------------------------------
 dataset = merge_datasets([
-        "data/BAHAMAS/bahamas_0.1.pkl",
-        "data/BAHAMAS/bahamas_0.3.pkl",
-        "data/BAHAMAS/bahamas_1.pkl",
-        "data/BAHAMAS/bahamas_cdm.pkl"], 
+        "data/DarkData/BAHAMAS/bahamas_0.1.pkl",
+        "data/DarkData/BAHAMAS/bahamas_0.3.pkl",
+        "data/DarkData/BAHAMAS/bahamas_1.pkl",
+        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"], 
         label_names, stack_features=True)
 
 dataset = dataset.train_test_split(test_size=0.3, seed=42)
 train_dataset = dataset['train']
 val_dataset = dataset['test']
+
+if args.normalize_features:
+    train_dataset, val_dataset = normalize_features(train_dataset, ["labels"], val_dataset=val_dataset)
 
 train_dl = DataLoader(
     train_dataset,
@@ -247,8 +253,11 @@ for epoch in range(num_epochs):
         total_loss = mse_loss + contrastive_weight * supcon_loss
         total_loss.backward()
 
-        train_loss += mse_loss.item() / len(train_dl)
-        train_contrastive_loss += supcon_loss.item() / len(train_dl)
+        train_loss += mse_loss.item() * B["labels"].size(0)
+        train_contrastive_loss += supcon_loss.item() * B["labels"].size(0)
+
+    train_loss /= len(train_dataset)
+    train_contrastive_loss /= len(train_dataset)
 
     optimizer.step()
     optimizer.zero_grad()
@@ -278,8 +287,11 @@ for epoch in range(num_epochs):
             else:
                 supcon_loss = batch_embeddings.new_tensor(0.0)
 
-            val_loss += mse_loss.item() / len(val_dl)
-            val_contrastive_loss += supcon_loss.item() / len(val_dl)
+            val_loss += mse_loss.item() * B["labels"].size(0)
+            val_contrastive_loss += supcon_loss.item() * B["labels"].size(0)
+
+    val_loss /= len(val_dataset)
+    val_contrastive_loss /= len(val_dataset)
 
     # --------- Refit linear probe on updated embeddings ----------
     with torch.no_grad():
