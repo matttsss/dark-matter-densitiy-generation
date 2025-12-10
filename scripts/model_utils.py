@@ -2,8 +2,8 @@ import torch
 import torch.nn.functional as F
 
 from astropt.model import GPT, GPTConfig
-from flow_model.hash_grid_encoding import MultiResHashGrid
-from flow_model.vector_field import VectorField, VectorFieldConfig
+from generative_model.hash_grid_encoding import MultiResHashGrid
+from generative_model.vector_field import VectorField, VectorFieldConfig
 
 class LinearRegression:
 

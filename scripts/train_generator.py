@@ -17,7 +17,8 @@ from umap import UMAP
 from dataclasses import asdict
 from sklearn.metrics import mean_squared_error, r2_score
 
-from flow_model.vector_field import VectorField, VectorFieldConfig
+from generative_model.hash_grid_encoding import MultiResHashGrid
+from generative_model.vector_field import VectorField, VectorFieldConfig
 from scripts.model_utils import RunningAverageMeter, LinearRegression, load_astropt_model, load_fm_model
 from scripts.plot_utils import plot_cross_section_histogram
 from scripts.embedings_utils import merge_datasets, compute_embeddings

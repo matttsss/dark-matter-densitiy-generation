@@ -42,6 +42,7 @@ def divergence_hutchinson(v, x):
 class VectorFieldConfig:
     sigma: float = 1.0
     dim: int = 768
+    hidden_dim: int = 512
     encoding_size: int = 64
     ot_method: str = "default"
     conditions: list[str] = field(default_factory=list)
@@ -104,7 +105,7 @@ class ResidualBlock(nn.Module):
 
 
 class VectorField(nn.Module):
-    def __init__(self, config: VectorFieldConfig, hidden_dim=1024, num_layers=8, num_threads=4):
+    def __init__(self, config: VectorFieldConfig, num_threads: int | str ="max"):
         super().__init__()
   
         match config.ot_method:
@@ -126,30 +127,28 @@ class VectorField(nn.Module):
             case _:
                 raise ValueError(f"Unknown ot_method: {config.ot_method}")
 
-        self.in_proj = nn.Linear(config.dim, hidden_dim)
+        features_per_level = config.encoding_size // 16
+        assert features_per_level * 16 == config.encoding_size, "encoding_size must be divisible by 16"
         self.hash_grid = MultiResHashGrid(
             dim=3,
             n_levels=16,
-            n_features_per_level=8
+            n_features_per_level=features_per_level
         )
 
         print(f"Hash grid output dim: {self.hash_grid.output_dim}")
 
         # residual layers
-        input_dim = self.hash_grid.output_dim
-        self.cond_mlp = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+        input_dim = self.hash_grid.output_dim + config.dim
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, config.hidden_dim),
             nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim * 2)
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+            nn.SiLU(),
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+            nn.SiLU(),
+            nn.Linear(config.hidden_dim, config.dim),
         )
 
-
-        self.layers = nn.ModuleList([
-            ResidualBlock(hidden_dim)
-            for _ in range(num_layers)
-        ])
-
-        self.out_proj = nn.Linear(hidden_dim, config.dim)
         self.config = config
 
     def _init_weights(self):
@@ -159,8 +158,8 @@ class VectorField(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
-        nn.init.zeros_(self.out_proj.weight)
-        nn.init.zeros_(self.out_proj.bias)
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
 
     def forward(self, t, x, cond):        
         t = t.unsqueeze(-1) if t.dim() == 1 else t.expand(x.shape[0], 1)
@@ -168,17 +167,7 @@ class VectorField(nn.Module):
         encoded_params = torch.cat([cond, t], dim=-1)
         encoded_params = self.hash_grid(encoded_params)
 
-        gamma_beta = self.cond_mlp(encoded_params)
-        gamma, beta = gamma_beta.chunk(2, dim=-1)
-
-        h = self.in_proj(x)
-
-        # residual blocks with FiLM modulation
-        for block in self.layers:
-            h_norm = block(h)
-            h = h_norm * gamma + beta
-
-        return self.out_proj(h)
+        return self.net(torch.cat([x, encoded_params], dim=-1))
 
     @torch.no_grad()
     def sample_flow(self, cond):
