@@ -42,10 +42,11 @@ def divergence_hutchinson(v, x):
 class VectorFieldConfig:
     sigma: float = 1.0
     dim: int = 768
-    hidden_dim: int = 512
     encoding_size: int = 64
     ot_method: str = "default"
     conditions: list[str] = field(default_factory=list)
+    mlp_depth: int = 4
+    hidden_dim: int = 512
 
 class OneBlobEncoding(nn.Module):
     def __init__(self, encoding_size: int):
@@ -132,22 +133,29 @@ class VectorField(nn.Module):
         self.hash_grid = MultiResHashGrid(
             dim=3,
             n_levels=16,
-            n_features_per_level=features_per_level
+            n_features_per_level=features_per_level,
+            log2_hashmap_size=19
         )
 
         print(f"Hash grid output dim: {self.hash_grid.output_dim}")
 
-        # residual layers
+        # Build MLP dynamically based on depth and width
         input_dim = self.hash_grid.output_dim + config.dim
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, config.hidden_dim),
-            nn.SiLU(),
-            nn.Linear(config.hidden_dim, config.hidden_dim),
-            nn.SiLU(),
-            nn.Linear(config.hidden_dim, config.hidden_dim),
-            nn.SiLU(),
-            nn.Linear(config.hidden_dim, config.dim),
-        )
+        layers = []
+        
+        # Input layer
+        layers.append(nn.Linear(input_dim, config.hidden_dim))
+        layers.append(nn.SiLU())
+        
+        # Hidden layers
+        for _ in range(config.mlp_depth - 2):
+            layers.append(nn.Linear(config.hidden_dim, config.hidden_dim))
+            layers.append(nn.SiLU())
+        
+        # Output layer
+        layers.append(nn.Linear(config.hidden_dim, config.dim))
+        
+        self.net = nn.Sequential(*layers)
 
         self.config = config
 

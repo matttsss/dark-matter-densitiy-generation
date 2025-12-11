@@ -77,8 +77,8 @@ def sample_batch(data_loader, device):
 
 def train_model(train_dl: DataLoader, val_dl: DataLoader, fm_model: VectorField, 
                 wandb_run: wandb.Run | None, epochs: int,
-                batch_scale: int, checkpoint_path) -> VectorField:
-    opt = torch.optim.AdamW(fm_model.parameters(), lr=5e-4)
+                batch_scale: int, checkpoint_path, lr: float = 5e-4) -> VectorField:
+    opt = torch.optim.AdamW(fm_model.parameters(), lr=lr)
     scheduler = CosineAnnealingLR(opt, T_max=epochs)
 
     global train_avg_meter, val_avg_meter
@@ -152,7 +152,7 @@ def main(args, device):
     model_name = args.model_path.split('/')[-1].replace('.pt','')
     sigma_name = f"sigma_{args.sigma:.3f}".replace('.','_')
     path_prefix = args.path_prefix + '_' if args.path_prefix else ""
-    checkpoint_path = f"model/flow_matching/{path_prefix}{args.ot_method}_{sigma_name}_{model_name}.pt"
+    checkpoint_path = f"model/flow_matching/{path_prefix}{args.ot_method}_{args.mlp_depth}_{args.mlp_hidden_dim}_{sigma_name}_{model_name}.pt"
 
     # ==============================================
     # Setup Wandb
@@ -171,6 +171,8 @@ def main(args, device):
                 "sigma": args.sigma,
                 "ot_method": args.ot_method,
                 "encoding_size": args.encoding_size,
+                "mlp_depth": args.mlp_depth,
+                "mlp_hidden_dim": args.mlp_hidden_dim,
                 "astropt_model": model_name
             }
         )
@@ -202,7 +204,9 @@ def main(args, device):
             dim=embeddings_dim,
             encoding_size=args.encoding_size,
             ot_method=args.ot_method,
-            conditions=args.labels
+            conditions=args.labels,
+            mlp_depth=args.mlp_depth,
+            hidden_dim=args.mlp_hidden_dim
         )
         fm_model = VectorField(fm_config, num_threads=4).to(device)
     
@@ -213,7 +217,7 @@ def main(args, device):
 
     try:
         fm_model = train_model(train_embed_dl, val_embed_dl, fm_model, wandb_run,
-                               args.epochs, args.batch_scale, checkpoint_path)
+                               args.epochs, args.batch_scale, checkpoint_path, args.lr)
     except KeyboardInterrupt:
         print("Training interrupted. Proceeding to validation with current model.")
         fm_model = load_fm_model(checkpoint_path, device=device, strict=False)
@@ -254,7 +258,7 @@ def main(args, device):
     # Plot predictions (except for cross sections)
     # ==============================================
 
-    plot_folder = f"figures/flow_matching/{args.ot_method}/{path_prefix}{sigma_name}_{model_name}"
+    plot_folder = f"figures/flow_matching/{args.ot_method}_{args.mlp_depth}_{args.mlp_hidden_dim}/{path_prefix}{sigma_name}_{model_name}"
     if args.save_plots or wandb_run is None: os.makedirs(plot_folder, exist_ok=True)
 
     metrics = {}
@@ -383,12 +387,15 @@ if __name__ == "__main__":
     parser.add_argument('--nb_points', type=int, default=7000, help='Number of points to use for embeddings')
     parser.add_argument('--labels', nargs='+', default=["mass", "label"], help='Labels to use for the conditions of the flow matching model')
     parser.add_argument('--model_path', type=str, default="model/ckpt.pt", help='Path to the astropt checkpoint')
+    parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate for the optimizer')
     parser.add_argument('--epochs', type=int, default=3000, help='Number of training epochs')
     parser.add_argument('--batch_scale', type=int, default=20, help='Batch scales the batches to get more time samples per batch    ')
     
     parser.add_argument('--sigma', type=float, default=0.1, help='Sigma value for the flow matching model')
     parser.add_argument('--ot_method', type=str, default="default", help='Optimal transport method to use')
     parser.add_argument('--encoding_size', type=int, default=64, help='Size of the hash grid encoding')
+    parser.add_argument('--mlp_depth', type=int, default=4, help='Number of hidden layers in the MLP')
+    parser.add_argument('--mlp_hidden_dim', type=int, default=1024, help='Width of the MLP hidden layers')
 
     parser.add_argument('--path_prefix', type=str, default="", help='Path prefix for saving the model and plots')
     parser.add_argument('--save_plots', action='store_true', help='Whether to save plots locally')
