@@ -1,5 +1,5 @@
 import torch
-from scripts.model_utils import load_fm_model, load_astropt_model, load_model
+from scripts.model_utils import load_fm_model, load_astropt_model
 from scripts.embedings_utils import merge_datasets
 import os
 
@@ -14,7 +14,7 @@ def get_embeddings(
     image: torch.Tensor = None,
     positions: torch.Tensor = None,
     # Config
-    steps: int = 300,
+    steps: int = 5000,
     fm_path: str = "model/flow_ckpt.pt",
     astropt_path: str = "model/finetuned_ckpt.pt",
 ):
@@ -68,11 +68,9 @@ def _embed_with_astropt(device, image, positions, checkpoint_path):
     # Use the SAME loader as diffusion training
     # Import from the same place as diffusion_train.py
     
-    model = load_model(
+    model = load_astropt_model(
         checkpoint_path=checkpoint_path,
         device=device,
-        lora_rank=0,
-        output_dim=0,
     )
     model.eval()
 
@@ -104,26 +102,45 @@ def load_ddpm(checkpoint_path: str, device: torch.device):
     if checkpoint_path is None or not os.path.exists(checkpoint_path):
         raise ValueError(f"Invalid DDPM checkpoint path: {checkpoint_path}")
     
-    model = DDPM().to(device)
+    # Match training config
+    model = DDPM(
+        patch_size=4,       # Changed from default 10
+        schedule="cosine",
+        timesteps=1000  # Changed from linear
+        # depth=12, timesteps=1000 are defaults
+    ).to(device)
+    
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
     model.eval()
     return model
-
 
 def infer_ddpm(
     ddpm_model,
     conditioning_embeddings: torch.Tensor,
     clamp_output: bool = True,
+    use_ddim: bool = True,        # NEW
+    ddim_steps: int = 50,         # NEW
+    guidance_scale: float = 3.0,  # NEW
 ):
     device = next(ddpm_model.parameters()).device
     conditioning_embeddings = conditioning_embeddings.to(device)
     
     ddpm_model.eval()
     with torch.no_grad():
-        generated_images = ddpm_model.sample(conditioning_embeddings)
+        if use_ddim:
+            generated_images = ddpm_model.ddim_sample(
+                conditioning_embeddings, 
+                steps=ddim_steps, 
+                eta=0.0,
+                guidance_scale=guidance_scale
+            )
+        else:
+            generated_images = ddpm_model.sample(
+                conditioning_embeddings,
+                guidance_scale=guidance_scale
+            )
         
         if clamp_output:
-            # Normalize to [0, 1] to match original image range
             generated_images = (generated_images - generated_images.min()) / (generated_images.max() - generated_images.min() + 1e-8)
 
     return generated_images
@@ -137,11 +154,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--fm_path", type=str, default="model_weights/fm.pt", help="Path to flow model checkpoint")
     parser.add_argument("--astropt_path", type=str, default="model_weights/finetuned_contrastive_ckpt.pt", help="Path to AstroPT checkpoint")
-    parser.add_argument("--ddpm_path", type=str, default="model_weights/best_diffusion_model.pt", help="Path to DDPM checkpoint")
+    parser.add_argument("--ddpm_path", type=str, default="model_weights/final_diffusion_model_1000.pt", help="Path to DDPM checkpoint")
     parser.add_argument("--mass", type=float, help="Mass value for conditioning")
     parser.add_argument("--label", type=float, help="Label value for conditioning")
     parser.add_argument("--sample_idx", type=int, help="Index of sample from BAHAMAS dataset")
-    parser.add_argument("--steps", type=int, default=100, help="Flow model integration steps")
+    parser.add_argument("--steps", type=int, default=3000, help="Flow model integration steps")
     parser.add_argument("--output_path", type=str, default="generated_images.pt", help="Output path")
     parser.add_argument("--save_png", action="store_true", help="Save as PNG image")
     args = parser.parse_args()
