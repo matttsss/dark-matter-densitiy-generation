@@ -11,11 +11,13 @@ import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from functools import partial
+
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 import torch.nn.functional as F
 import numpy as np
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import wandb
 import matplotlib.pyplot as plt
 from scipy import ndimage
@@ -23,11 +25,17 @@ from scipy.stats import pearsonr, skew, kurtosis
 from sklearn.linear_model import Ridge
 from sklearn.metrics import r2_score
 
-from model_utils import load_astropt_model
-from embedings_utils import merge_datasets, compute_embeddings
+from scripts.model_utils import load_astropt_model, load_fm_model
+from scripts.embedings_utils import merge_datasets, compute_embeddings
 from generative_model.DDPM import DDPM
 
 LABEL_NAMES = ["mass", "label"]
+DATASETS = [
+        "data/BAHAMAS/bahamas_0.1.pkl",
+        "data/BAHAMAS/bahamas_0.3.pkl",
+        "data/BAHAMAS/bahamas_1.pkl",
+        "data/BAHAMAS/bahamas_cdm.pkl",
+    ]
 
 
 # =============================================================================
@@ -512,72 +520,17 @@ def plot_conditioning_scatter(real_images: torch.Tensor, generated_images: torch
 # =============================================================================
 # TRAINING SCRIPT
 # =============================================================================
+def load_images():
+    dataset_images = merge_datasets(DATASETS, image_only=True)
 
-def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
-                    epochs: int = 200, batch_size: int = 32, 
-                    resume: str = None, auto_resume: bool = False):
-    """Training with resumption and full metrics."""
+    torchify = lambda column: torch.from_numpy(np.asarray(column)).float()
 
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() else
-        "mps" if torch.backends.mps.is_available() else
-        "cpu"
-    )
-    print(f"Training diffusion on device: {device}")
-    print(f"T={timesteps}, epochs={epochs}, batch_size={batch_size}")
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    # -------------------------------------------------
-    # 1) Load finetuned AstroPT encoder
-    # -------------------------------------------------
-    print("Loading finetuned AstroPT checkpoint...")
-    model = load_astropt_model(checkpoint_path=weights_path, device=device)
-    model.eval()
-
-    # -------------------------------------------------
-    # 2) Load datasets and compute embeddings
-    # -------------------------------------------------
-    print("Loading datasets...")
-    
-    dataset = (
-        merge_datasets([
-            "data/BAHAMAS/bahamas_0.1.pkl",
-            "data/BAHAMAS/bahamas_0.3.pkl",
-            "data/BAHAMAS/bahamas_1.pkl",
-            "data/BAHAMAS/bahamas_cdm.pkl",
-        ])
-        .select_columns(["images", "images_positions", *LABEL_NAMES])
-        .shuffle(seed=42)
-    )
-
-    dataset_images = (
-        merge_datasets([
-            "data/BAHAMAS/bahamas_0.1.pkl",
-            "data/BAHAMAS/bahamas_0.3.pkl",
-            "data/BAHAMAS/bahamas_1.pkl",
-            "data/BAHAMAS/bahamas_cdm.pkl",
-        ], image_only=True)
-        .shuffle(seed=42)
-    )
-
-    print(f"Dataset size: {len(dataset)}")
-
-    # Compute embeddings
-    print("Computing embeddings...")
-    dl = DataLoader(dataset, batch_size=32, num_workers=4, prefetch_factor=3)
-    embeddings, lab_dict = compute_embeddings(model, dl, device, LABEL_NAMES)
-    embeddings = embeddings.cpu()
-    masses = lab_dict["mass"].cpu()
-    labels = lab_dict["label"].cpu()
-    
+    # Pre-load images
     print("Pre-loading images...")
-    all_images = []
-    for i in tqdm(range(len(dataset_images)), desc="Loading images"):
-        img = np.array(dataset_images[i]["image"])
-        all_images.append(img)
-    all_images = torch.from_numpy(np.stack(all_images)).float()
+    all_images = torchify(dataset_images["image"])
+    print(f"Raw images shape: {all_images.shape}")
 
+    # Handle format - images are (N, C, H, W) already if shape[1] == 1
     if all_images.dim() == 4 and all_images.shape[1] != 1:
         all_images = all_images.permute(0, 3, 1, 2)
     elif all_images.dim() == 3:
@@ -590,11 +543,112 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
     print(f"Normalized images range: [{all_images.min():.4f}, {all_images.max():.4f}]")
     
     print(f"Images shape: {all_images.shape}")
-    print(f"Embeddings shape: {embeddings.shape}")
 
-    # -------------------------------------------------
-    # 3) Train/val split
-    # -------------------------------------------------
+
+    return all_images, {feature_name: torchify(dataset_images[feature_name]) for feature_name in LABEL_NAMES}
+
+def collate_fn(batch: list[tuple], fm_model, device):
+    conditions = []
+    images = []
+
+    for image, condition in batch:
+        conditions.append(condition)
+        images.append(image)
+
+    conditions = torch.stack(conditions).to(device)
+    images = torch.stack(images).to(device)
+
+    embeddings = fm_model.sample_flow(conditions)
+
+    return images, embeddings
+
+def load_fm_datasets(model_path: str, device: torch.device, batch_size: int = 32):
+
+    fm_model = load_fm_model(checkpoint_path=model_path, device=device)
+    all_images, features_dict = load_images()
+    all_images = all_images.to(device)
+    features = torch.stack([features_dict[feature_name].to(device) for feature_name in LABEL_NAMES], dim=1)
+
+    # Split datasets
+    # Train/val split with combined dataset
+    train_size = int(0.8 * len(all_images))
+  
+    generator = torch.Generator().manual_seed(42)
+    indices = torch.randperm(len(features), generator=generator)
+    train_indices = indices[:train_size]
+    val_indices = indices[train_size:]
+
+    train_dataset = TensorDataset(all_images[train_indices], features[train_indices])
+    val_dataset = TensorDataset(all_images[val_indices], features[val_indices])
+
+    val_model = copy.deepcopy(fm_model)
+    val_model.eval()
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=partial(collate_fn, device=device, fm_model=fm_model)
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=partial(collate_fn, device=device, fm_model=val_model)
+    )
+
+    # Fixed evaluation batch
+    eval_size = min(128, len(val_dataset))
+    eval_indices = val_indices[:eval_size]
+
+    eval_images = all_images[eval_indices].to(device)
+    eval_masses = features_dict['mass'][eval_indices].to(device)
+    eval_labels = features_dict['label'][eval_indices].to(device)
+
+
+    # Generate fixed embeddings for evaluation
+    with torch.no_grad():
+        eval_cond = fm_model.sample_flow(features[eval_indices])
+    
+    return train_loader, val_loader, (eval_images, eval_cond, eval_masses, eval_labels)
+
+
+def load_astropt_datasets(model_path: str, device: torch.device, batch_size: int = 32):
+    """
+    Load AstroPT datasets, compute embeddings, and create train/val dataloaders.
+    
+    Args:
+        model_path: Path to the finetuned AstroPT model checkpoint
+        device: Device to use for computation (torch.device)
+    
+    Returns:
+        Tuple of (train_loader, val_loader, lab_dict) where:
+        - train_loader: DataLoader for training data
+        - val_loader: DataLoader for validation data
+        - lab_dict: Dictionary with label information
+    """
+    
+     # Load finetuned AstroPT encoder
+    print("Loading finetuned AstroPT checkpoint...")
+    model = load_astropt_model(checkpoint_path=model_path, device=device)
+    model.eval()
+    
+    # Load datasets
+    print("\nLoading datasets...")
+    dataset = merge_datasets(DATASETS, feature_names=LABEL_NAMES)
+    print(f"Dataset size: {len(dataset)}", end="\n\n")
+
+    # Compute embeddings
+    print("Computing embeddings...")
+    dl = DataLoader(dataset, batch_size=512, num_workers=4, prefetch_factor=3)
+    embeddings, features = compute_embeddings(model, dl, device, LABEL_NAMES)
+    embeddings = embeddings.cpu()
+    features = {k: v.cpu() for k, v in features.items()}
+
+    all_images, _ = load_images()
+
+    # Train/val split with combined dataset
     train_size = int(0.8 * len(embeddings))
     
     generator = torch.Generator().manual_seed(42)
@@ -602,18 +656,8 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
     train_indices = indices[:train_size]
     val_indices = indices[train_size:]
 
-    train_dataset = TensorDataset(
-        all_images[train_indices],
-        embeddings[train_indices],
-        masses[train_indices],
-        labels[train_indices],
-    )
-    val_dataset = TensorDataset(
-        all_images[val_indices],
-        embeddings[val_indices],
-        masses[val_indices],
-        labels[val_indices],
-    )
+    train_dataset = TensorDataset(all_images[train_indices], embeddings[train_indices])
+    val_dataset = TensorDataset(all_images[val_indices], embeddings[val_indices])
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
                               num_workers=4, pin_memory=(device.type == "cuda"), persistent_workers=True)
@@ -624,18 +668,47 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
 
     # Fixed evaluation batch
     eval_size = min(128, len(val_dataset))
-    eval_indices = torch.randperm(len(val_dataset))[:eval_size]
-    eval_images = torch.stack([val_dataset[i][0] for i in eval_indices]).to(device)
-    eval_cond = torch.stack([val_dataset[i][1] for i in eval_indices]).to(device)
-    eval_masses = torch.stack([val_dataset[i][2] for i in eval_indices]).to(device)
-    eval_labels = torch.stack([val_dataset[i][3] for i in eval_indices]).to(device)
+    eval_indices = val_indices[:eval_size]
+
+    eval_images = all_images[eval_indices].to(device)
+    eval_cond = embeddings[eval_indices].to(device)
+    eval_masses = features['mass'][eval_indices].to(device)
+    eval_labels = features['label'][eval_indices].to(device)
 
     # Free memory
-    del model, dataset, dataset_images, all_images, embeddings, masses, labels
+    del all_images, embeddings
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
+    return train_loader, val_loader, (eval_images, eval_cond, eval_masses, eval_labels)
+
+
+def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
+                    epochs: int = 200, batch_size: int = 32, 
+                    resume: str | None = None, auto_resume: bool = False, use_astropt: bool = True):
+    """Training with resumption and full metrics."""
+
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else
+        "mps" if torch.backends.mps.is_available() else
+        "cpu"
+    )
+    print(f"Training diffusion on device: {device}")
+    print(f"T={timesteps}, epochs={epochs}, batch_size={batch_size}", end="\n\n")
+
+    os.makedirs(output_dir, exist_ok=True)
+
     # -------------------------------------------------
-    # 4) Create DDPM
+    # 1) Load datasets
+    # -------------------------------------------------
+    if use_astropt:
+        train_loader, val_loader, val_datas = load_astropt_datasets(weights_path, device)
+    else:
+        train_loader, val_loader, val_datas = load_fm_datasets(weights_path, device)
+
+    eval_images, eval_cond, eval_masses, eval_labels = val_datas
+
+    # -------------------------------------------------
+    # 2) Create model, optimizer, EMA
     # -------------------------------------------------
     print("Creating DDPM model...")
     
@@ -658,7 +731,7 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
     start_epoch = 0
 
     # -------------------------------------------------
-    # Resume from checkpoint
+    # 3) Resume from checkpoint if provided
     # -------------------------------------------------
     if resume is None and auto_resume:
         auto_path = os.path.join(output_dir, "latest_checkpoint.pt")
@@ -692,7 +765,7 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
             # But we have the model weights
 
     # -------------------------------------------------
-    # Initialize wandb
+    # 4) Initialize Weights & Biases
     # -------------------------------------------------
     run = wandb.init(
         entity="matttsss-epfl",
@@ -739,7 +812,7 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
         train_loss = 0.0
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
-        for images, conditions, _, _ in pbar:
+        for images, conditions in pbar:
             images = images.to(device)
             conditions = conditions.to(device)
             
@@ -774,7 +847,8 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
         val_loss = 0.0
 
         with torch.no_grad():
-            for images, conditions, _, _ in val_loader:
+            pbar = tqdm(val_loader, desc=f"Validation Epoch {epoch}")
+            for images, conditions in pbar:
                 images = images.to(device)
                 conditions = conditions.to(device)
 
@@ -827,11 +901,6 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
                 log_dict["plots/conditioning"] = wandb.Image(fig_cond)
                 plt.close(fig_cond)
 
-        run.log(log_dict)
-        
-        # Print summary
-        print(f"Epoch {epoch}: train={train_loss:.4f}, val={val_loss:.4f}", end="")
-        if epoch % eval_every == 0:
             r_ell_mean = metrics.get("fourier/r_ell_mean", 0)
             r_ell_low = metrics.get("fourier/r_ell_low", 0)
             mass_ret = metrics.get("conditioning/mass_r2_retention", 0)
@@ -841,8 +910,13 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
                 best_r_ell = r_ell_mean
                 print(f"  ★ New best r(ℓ)={r_ell_mean:.4f}")
                 save_checkpoint(epoch, is_best_r_ell=True)
+
         else:
             print()
+
+        run.log(log_dict)
+        # Print summary
+        print(f"Epoch {epoch}: train={train_loss:.4f}, val={val_loss:.4f}", end="")
 
         # Save best by val loss
         if val_loss < best_val_loss:
@@ -868,6 +942,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, default="model_weights/")
     parser.add_argument("--weights_path", type=str, default="model_weights/finetuned_contrastive_ckpt.pt")
+    parser.add_argument("--model_type", type=str, choices=["astropt", "fm"], default="astropt")
     parser.add_argument("--timesteps", type=int, default=1000)
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch_size", type=int, default=32)
@@ -883,4 +958,5 @@ if __name__ == "__main__":
         args.batch_size,
         args.resume,
         args.auto_resume,
+        args.model_type == "astropt"
     )

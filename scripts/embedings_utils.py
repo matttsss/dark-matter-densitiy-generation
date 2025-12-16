@@ -51,24 +51,17 @@ def fetch_dataset(dataset_path: str, feature_names: list[str],
                   stack_features: bool, image_only: bool = False) -> Dataset:
 
     cache_file_path = f"cache/{'.'.join(dataset_path.split('/')[-1].split('.')[:-1])}"
-    
-    if (image_only):
-        with open(dataset_path, 'rb') as f:
-            metadata, images = pickle.load(f)
-            images = images[:, 0:1, :, :]
+    if not os.path.isdir(cache_file_path) or image_only:
         
-        return Dataset.from_dict({"image": images})
-
-    if not os.path.isdir(cache_file_path):
-        
-
         with open(dataset_path, 'rb') as f:
             metadata, images = pickle.load(f)
 
         del metadata["name"]
         del metadata["galaxy_catalogues"]
-        images = images[::, [0, 0, 0]]
+        images = images[::, [0, 0, 0] if not image_only else 0]
         ds = Dataset.from_dict({"image": images, **metadata})
+
+        if image_only: return ds
 
         def process_row(idx):
             """This function ensures that the image is tokenised in the same way as

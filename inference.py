@@ -14,7 +14,7 @@ def get_embeddings(
     image: torch.Tensor = None,
     positions: torch.Tensor = None,
     # Config
-    steps: int = 5000,
+    nb_points: int = 300,
     fm_path: str = "model/flow_ckpt.pt",
     astropt_path: str = "model/finetuned_ckpt.pt",
 ):
@@ -37,17 +37,19 @@ def get_embeddings(
     if has_image:
         return _embed_with_astropt(device, image, positions, astropt_path)
     else:
-        return _embed_with_flow(device, mass, label, steps, fm_path)
+        return _embed_with_flow(device, mass, label, nb_points, fm_path)
 
 
-def _embed_with_flow(device, mass, label, steps, checkpoint_path):
+def _embed_with_flow(device, mass, label, nb_points, checkpoint_path):
     """(mass, label) → 768-dim embedding"""
     model = load_fm_model(checkpoint_path, device)
     model.eval()
 
     with torch.no_grad():
-        cond = torch.tensor([[mass, float(label)]], dtype=torch.float32, device=device)
-        embeddings = model.sample_flow(cond, steps=steps)
+        cond = torch.cat([torch.as_tensor([mass], dtype=torch.float32), 
+                          torch.as_tensor([label], dtype=torch.float32)], dim=-1).to(device)
+        cond = cond.repeat(nb_points, 1)  # Expand to batch size
+        embeddings = model.sample_flow(cond)
 
     return embeddings
 
@@ -70,7 +72,7 @@ def _embed_with_astropt(device, image, positions, checkpoint_path):
     
     model = load_astropt_model(
         checkpoint_path=checkpoint_path,
-        device=device,
+        device=device
     )
     model.eval()
 
@@ -158,7 +160,7 @@ if __name__ == "__main__":
     parser.add_argument("--mass", type=float, help="Mass value for conditioning")
     parser.add_argument("--label", type=float, help="Label value for conditioning")
     parser.add_argument("--sample_idx", type=int, help="Index of sample from BAHAMAS dataset")
-    parser.add_argument("--steps", type=int, default=3000, help="Flow model integration steps")
+    parser.add_argument("--nb_images", type=int, default=10, help="Number of images to generate")
     parser.add_argument("--output_path", type=str, default="generated_images.pt", help="Output path")
     parser.add_argument("--save_png", action="store_true", help="Save as PNG image")
     args = parser.parse_args()
@@ -174,7 +176,7 @@ if __name__ == "__main__":
             "data/BAHAMAS/bahamas_0.3.pkl",
             "data/BAHAMAS/bahamas_1.pkl",
             "data/BAHAMAS/bahamas_cdm.pkl",
-        ]).select_columns(["images", "images_positions", "mass", "label"])
+        ], feature_names=["mass", "label"])
         
         # Load raw images dataset
         dataset_images = merge_datasets([
@@ -258,7 +260,7 @@ if __name__ == "__main__":
             device,
             mass=args.mass,
             label=args.label,
-            steps=args.steps,
+            nb_points=args.nb_images,
             fm_path=args.fm_path,
         )
     else:
@@ -271,67 +273,75 @@ if __name__ == "__main__":
     torch.save(generated_images, args.output_path)
     print(f"Generated images saved to {args.output_path}")
 
-if args.save_png:
-    for i, gen_img in enumerate(generated_images):
-        gen_np = gen_img[0].cpu().numpy()
-        
-        if original_image is not None:
-            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    if args.save_png:
+        for i, gen_img in enumerate(generated_images):
+            gen_np = gen_img[0].cpu().numpy()
             
-            # Handle different original image formats
-            print(f"Original shape: {original_image.shape}")
-            
-            if original_image.ndim == 3:
-                # Could be (H, W, C) or (C, H, W)
-                if original_image.shape[-1] in [1, 3]:
-                    # (H, W, C) format
-                    orig_display = original_image[:, :, 0]
-                elif original_image.shape[0] in [1, 3]:
-                    # (C, H, W) format
-                    orig_display = original_image[0, :, :]
-                else:
-                    # Unknown, try first slice
-                    orig_display = original_image[:, :, 0]
-            elif original_image.ndim == 2:
-                orig_display = original_image
-            elif original_image.ndim == 1:
-                # 1D array - try to reshape to square
-                side = int(np.sqrt(len(original_image)))
-                if side * side == len(original_image):
-                    orig_display = original_image.reshape(side, side)
-                else:
-                    print(f"Warning: Cannot reshape 1D array of length {len(original_image)} to square")
-                    orig_display = original_image.reshape(-1, 100)  # fallback
-            else:
-                orig_display = original_image
+            if original_image is not None:
+                fig, axes = plt.subplots(1, 3, figsize=(15, 5))
                 
-            print(f"Display shape: {orig_display.shape}")
-            
-            # Original
-            im0 = axes[0].imshow(orig_display, cmap="viridis")
-            axes[0].set_title(f"Original (idx={args.sample_idx})\nShape: {orig_display.shape}")
-            plt.colorbar(im0, ax=axes[0])
-            
-            # Generated
-            im1 = axes[1].imshow(gen_np, cmap="viridis")
-            axes[1].set_title(f"Generated\nShape: {gen_np.shape}")
-            plt.colorbar(im1, ax=axes[1])
-            
-            # Difference
-            from skimage.transform import resize
-            if orig_display.shape != gen_np.shape:
-                orig_resized = resize(orig_display, gen_np.shape, anti_aliasing=True)
-            else:
-                orig_resized = orig_display
-            
-            orig_norm = (orig_resized - orig_resized.min()) / (orig_resized.max() - orig_resized.min() + 1e-8)
-            gen_norm = (gen_np - gen_np.min()) / (gen_np.max() - gen_np.min() + 1e-8)
-            diff = orig_norm - gen_norm
-            
-            im2 = axes[2].imshow(diff, cmap="RdBu", vmin=-1, vmax=1)
-            axes[2].set_title("Difference (Original - Generated)")
-            plt.colorbar(im2, ax=axes[2])
-            
-            plt.tight_layout()
-            plt.savefig(f"comparison_{i}.png", dpi=150)
-            plt.close()
+                # Handle different original image formats
+                print(f"Original shape: {original_image.shape}")
+                
+                if original_image.ndim == 3:
+                    # Could be (H, W, C) or (C, H, W)
+                    if original_image.shape[-1] in [1, 3]:
+                        # (H, W, C) format
+                        orig_display = original_image[:, :, 0]
+                    elif original_image.shape[0] in [1, 3]:
+                        # (C, H, W) format
+                        orig_display = original_image[0, :, :]
+                    else:
+                        # Unknown, try first slice
+                        orig_display = original_image[:, :, 0]
+                elif original_image.ndim == 2:
+                    orig_display = original_image
+                elif original_image.ndim == 1:
+                    # 1D array - try to reshape to square
+                    side = int(np.sqrt(len(original_image)))
+                    if side * side == len(original_image):
+                        orig_display = original_image.reshape(side, side)
+                    else:
+                        print(f"Warning: Cannot reshape 1D array of length {len(original_image)} to square")
+                        orig_display = original_image.reshape(-1, 100)  # fallback
+                else:
+                    orig_display = original_image
+                    
+                print(f"Display shape: {orig_display.shape}")
+                
+                # Original
+                im0 = axes[0].imshow(orig_display, cmap="viridis")
+                axes[0].set_title(f"Original (idx={args.sample_idx})\nShape: {orig_display.shape}")
+                plt.colorbar(im0, ax=axes[0])
+                
+                # Generated
+                im1 = axes[1].imshow(gen_np, cmap="viridis")
+                axes[1].set_title(f"Generated\nShape: {gen_np.shape}")
+                plt.colorbar(im1, ax=axes[1])
+                
+                # Difference
+                from skimage.transform import resize
+                if orig_display.shape != gen_np.shape:
+                    orig_resized = resize(orig_display, gen_np.shape, anti_aliasing=True)
+                else:
+                    orig_resized = orig_display
+                
+                orig_norm = (orig_resized - orig_resized.min()) / (orig_resized.max() - orig_resized.min() + 1e-8)
+                gen_norm = (gen_np - gen_np.min()) / (gen_np.max() - gen_np.min() + 1e-8)
+                diff = orig_norm - gen_norm
+                
+                im2 = axes[2].imshow(diff, cmap="RdBu", vmin=-1, vmax=1)
+                axes[2].set_title("Difference (Original - Generated)")
+                plt.colorbar(im2, ax=axes[2])
+                
+                plt.tight_layout()
+                plt.savefig(f"comparison_{i}.png", dpi=150)
+                plt.close()
+
+            else: 
+                plt.figure(figsize=(5, 5))
+                plt.imshow(gen_np, cmap="viridis")
+                plt.title(f"Generated Image {i}\nShape: {gen_np.shape}")
+                plt.colorbar()
+                plt.savefig(f"generated_{i}.png", dpi=150)
+                plt.close()
