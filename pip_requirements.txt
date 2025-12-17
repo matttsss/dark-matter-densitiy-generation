@@ -11,10 +11,15 @@ umap-learn
 
 pandas
 
+# To download weights from our Google Drive
+gdown
+
 torch 
 torchvision
 
 astropt
 timm
+
+# For neural ODEs and continuous normalizing flows
 torchdiffeq
 torchcfm
