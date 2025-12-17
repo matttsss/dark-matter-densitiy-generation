@@ -1,3 +1,25 @@
+"""
+AstroPT Model Fine-tuning and Linear Probe Module
+
+This module fine-tunes a pre-trained AstroPT model using a linear probe on multiple
+target labels with optional supervised contrastive loss. The training process includes
+warmup scheduling for the contrastive component and supports both local and W&B logging.
+
+Example:
+    To fine-tune an AstroPT model with supervised contrastive loss:
+    
+    $ python3 -m scripts.finetune_astropt \\
+        --pretrained_path model/ckpt.pt \\
+        --output_path model/finetuned_model.pt \\
+        --batch_size 64 \\
+        --num_epochs 60 \\
+        --learning_rate 1e-5 \\
+        --contrastive_weight 0.1 \\
+        --normalize_features \\
+        --use_wandb
+        --label_names mass label BCG_e1 BCG_e2 \\
+
+"""
 import torch, wandb, argparse
 import numpy as np
 from tqdm.auto import tqdm
@@ -5,7 +27,7 @@ from dataclasses import asdict
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from scripts.embedings_utils import merge_datasets, normalize_features
+from scripts.embeddings_utils import merge_datasets, normalize_features
 from scripts.model_utils import LinearRegression, batch_to_device, compute_embeddings, load_astropt_model
 
 
@@ -15,10 +37,18 @@ from scripts.model_utils import LinearRegression, batch_to_device, compute_embed
 
 def supervised_contrastive_loss(embeddings, labels, temperature=0.1):
     """
-    Supervised contrastive loss (Khosla et al. 2020 style) on a single label dimension.
-
-    embeddings: [B, D]
-    labels:     [B] (categorical or continuous; equality defines positives)
+    Compute supervised contrastive loss following Khosla et al. (2020).
+    
+    Computes contrastive loss on normalized embeddings where positive pairs are defined
+    as samples with equal labels. Includes numerical stability measures and handles edge cases.
+    
+    Args:
+        embeddings (torch.Tensor): Batch of embeddings, shape (batch_size, embedding_dim)
+        labels (torch.Tensor): Batch of labels for defining positives, shape (batch_size,)
+        temperature (float): Temperature parameter for softmax scaling (default: 0.1)
+    
+    Returns:
+        torch.Tensor: Scalar loss value; returns 0 if batch_size <= 1 or no valid positives
     """
     device = embeddings.device
     z = F.normalize(embeddings, dim=1)
@@ -59,8 +89,18 @@ def supervised_contrastive_loss(embeddings, labels, temperature=0.1):
 
 def get_contrastive_weight(epoch, max_weight, warmup_epochs):
     """
-    Linearly ramp contrastive weight from 0 to max_weight over warmup_epochs.
-    After warmup, stays at max_weight.
+    Linearly ramp up contrastive weight from 0 to max_weight during warmup.
+    
+    Provides a warmup schedule for the contrastive loss component to allow the model
+    to focus on supervised prediction before adding contrastive regularization.
+    
+    Args:
+        epoch (int): Current epoch number (0-indexed)
+        max_weight (float): Target maximum weight after warmup
+        warmup_epochs (int): Number of epochs over which to ramp up the weight
+    
+    Returns:
+        float: Contrastive weight for the current epoch; 0 if max_weight or warmup_epochs <= 0
     """
     if warmup_epochs <= 0 or max_weight <= 0:
         return 0.0

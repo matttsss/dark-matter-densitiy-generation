@@ -1,3 +1,10 @@
+"""
+Embedding Dataset Utilities Module
+
+This module provides utilities for loading, processing, and manipulating astronomical
+dataset embeddings from pickle files. It handles galaxy image tokenization, patch spiralization,
+feature augmentation, and dataset normalization for training with AstroPT models.
+"""
 
 import numpy as np
 import einops, torch, pickle, os
@@ -46,6 +53,30 @@ def spiralise(galaxy):
 
 def fetch_dataset(dataset_path: str, feature_names: list[str], 
                   stack_features: bool, image_only: bool = False) -> Dataset:
+    """
+    Load and process a galaxy dataset from pickle file with caching.
+    
+    Loads dataset from pickle, tokenizes galaxy images into patches, applies spiralization
+    and normalization, and caches processed data. Supports feature augmentation including
+    log transforms and computed features (e.g., BCG_norm from components).
+    
+    Args:
+        dataset_path (str): Path to pickle file containing (metadata, images) tuple
+        feature_names (list[str]): Names of features to include (mass, label, log_label, BCG_norm, etc.)
+        stack_features (bool): If True, stack all features into single 'labels' tensor;
+                               if False, keep as separate columns
+        image_only (bool): If True, return images and features without processing (default: False)
+    
+    Returns:
+        Dataset: HuggingFace Dataset with columns:
+                 - 'images': Tokenized, normalized, spiralized patches (num_patches, patch_dim)
+                 - 'images_positions': Position indices for patches
+                 - Feature columns based on feature_names (or 'labels' if stack_features=True)
+    
+    Note:
+        Automatically caches processed datasets in cache/ directory. Pass image_only=True
+        to skip caching and bypass cache if it exists.
+    """
 
     cache_file_path = f"cache/{'.'.join(dataset_path.split('/')[-1].split('.')[:-1])}"
     if not os.path.isdir(cache_file_path) or image_only:
@@ -154,12 +185,54 @@ def fetch_dataset(dataset_path: str, feature_names: list[str],
 def merge_datasets(
         datasets: list[str], feature_names: list[str] = ["mass","label"], 
         stack_features: bool = False, image_only: bool = False) -> Dataset:
+    """
+    Load and concatenate multiple galaxy datasets.
+    
+    Merges multiple dataset files using fetch_dataset, combining them into a single
+    HuggingFace Dataset for training or evaluation.
+    
+    Args:
+        datasets (list[str]): List of paths to pickle dataset files
+        feature_names (list[str]): Names of features to extract (default: ["mass", "label"])
+        stack_features (bool): If True, stack features into single tensor (default: False)
+        image_only (bool): If True, skip image processing (default: False)
+    
+    Returns:
+        Dataset: Concatenated HuggingFace Dataset containing all samples from input datasets
+    
+    Example:
+        >>> ds = merge_datasets(['data/bahamas_0.1.pkl', 'data/bahamas_0.3.pkl'],
+        ...                     feature_names=['mass', 'label', 'log_label'],
+        ...                     stack_features=True)
+    """
     return concatenate_datasets([fetch_dataset(path, feature_names, stack_features,image_only=image_only) for path in datasets])
 
 def normalize_features(
         dataset: Dataset, feature_names: list[str], val_dataset: Dataset | None = None) -> Dataset | tuple[Dataset, Dataset]:
-    """Normalizes the features in feature_names to have zero mean and unit variance.
-    The normalization is done per feature over the entire dataset.
+    """
+    Normalize features to zero mean and unit variance.
+    
+    Computes mean and standard deviation over the entire training dataset and applies
+    standardization. If a validation dataset is provided, applies the same normalization
+    computed from the training data.
+    
+    Args:
+        dataset (Dataset): Training dataset containing features to normalize
+        feature_names (list[str]): Names of feature columns to normalize
+        val_dataset (Dataset | None): Optional validation dataset to normalize using
+                                      training statistics (default: None)
+    
+    Returns:
+        Dataset or tuple[Dataset, Dataset]: 
+            - If val_dataset is None: Returns normalized training dataset
+            - If val_dataset is provided: Returns tuple of (normalized_train, normalized_val)
+    
+    Note:
+        Normalization statistics (mean, std) are computed from the training dataset.
+        Validation data is normalized using these training statistics to prevent leakage.
+    
+    Example:
+        >>> train_ds, val_ds = normalize_features(train_dataset, ['labels'], val_dataset=val_dataset)
     """
 
     # Compute mean and std per feature

@@ -13,28 +13,6 @@ from torchcfm.conditional_flow_matching import (
     OTPlanSampler
 )
 
-def divergence_hutchinson(v, x):
-    """
-    v : vector field output v_theta(x), shape [B, D]
-    x : input point, requires_grad=True, shape [B, D]
-    """
-    eps = torch.randn_like(x)     # Gaussian or Rademacher both work
-
-    # Jv = Jacobian-vector product: (dv/dx) * eps
-    Jv = torch.autograd.grad(
-        outputs=v,
-        inputs=x,
-        grad_outputs=eps,
-        create_graph=True,
-        retain_graph=True,
-        only_inputs=True
-    )[0]
-
-    # Divergence ≈ eps^T * J * eps
-    div = (Jv * eps).sum(dim=1)   # shape [B]
-    return div
-
-
 @dataclass
 class VectorFieldConfig:
     sigma: float = 1.0

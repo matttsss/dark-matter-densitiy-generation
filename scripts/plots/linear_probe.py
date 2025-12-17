@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from scripts.model_utils import compute_embeddings, load_astropt_model
 from scripts.plots.plot_utils import plot_labels, set_fonts
-from scripts.embedings_utils import merge_datasets
+from scripts.embeddings_utils import merge_datasets
 
 from umap import UMAP
 from sklearn.preprocessing import StandardScaler

@@ -1,6 +1,6 @@
 import torch
 from scripts.model_utils import load_fm_model, load_astropt_model
-from scripts.embedings_utils import merge_datasets
+from scripts.embeddings_utils import merge_datasets
 import os
 
 

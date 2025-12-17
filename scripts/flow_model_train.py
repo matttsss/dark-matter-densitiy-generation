@@ -1,9 +1,37 @@
 """
-Trains a flow matching model on astroPT embeddings.
+Flow Matching Model Training Module
 
-python3 -m scripts.train_generator \
-    --model_path <astropt_model_path> \
-    --nb_points 14000 --epochs 5000 --sigma 1.0
+This module trains a Flow Matching model on AstroPT embeddings using conditional flows
+to learn the mapping between conditions (e.g., mass, redshift) and embedding space.
+Supports Optimal Transport-based conditioning and provides training monitoring via W&B.
+
+Example:
+    To train a flow matching model on AstroPT embeddings with custom conditions:
+    
+    $ python3 -m scripts.flow_model_train \\
+        --model_path model/best_r_ell_model.pt \\
+        --nb_points 14000 \\
+        --epochs 5000 \\
+        --sigma 1.0 \\
+        --labels mass label \\
+        --save_plots \\
+        --use_wandb
+    
+    Arguments:
+        --model_path: Path to trained AstroPT embedding model
+        --nb_points: Number of embeddings to train on (default: 7000)
+        --epochs: Number of training epochs (default: 3000)
+        --batch_scale: Batch scaling factor for time sampling (default: 20)
+        --sigma: Flow matching sigma parameter (default: 0.1)
+        --ot_method: Optimal transport method to use (default: "default")
+        --encoding_size: Hash grid encoding size (default: 64)
+        --mlp_hidden_dim: MLP hidden layer dimension (default: 1024)
+        --lr: Learning rate (default: 5e-4)
+        --labels: Space-separated condition names
+        --path_prefix: Prefix for model and plot paths
+        --save_plots: Save plots locally
+        --use_wandb: Log metrics to Weights & Biases
+        --checkpoint: Path to checkpoint for resuming training
 """
 import numpy as np
 import argparse, wandb, os
@@ -18,11 +46,27 @@ from dataclasses import asdict
 
 from generative_model.vector_field import VectorField, VectorFieldConfig
 from scripts.plots.plot_utils import set_fonts
-from scripts.model_utils import RunningAverageMeter, load_fm_model, get_datasets
+from scripts.model_utils import RunningAverageMeter, load_fm_model, get_embeddings_datasets
 from scripts.plots.fm_validation import plot_results
 
 
 def compute_loss(fm_model: VectorField, x0, x1, cond, multiplicator: int = 1):
+    """
+    Compute flow matching loss between initial and target distributions.
+    
+    Samples random time points and intermediate positions along the flow path,
+    then computes MSE loss between predicted and target velocity fields.
+    
+    Args:
+        fm_model (VectorField): Flow matching model
+        x0 (torch.Tensor): Initial samples from noise distribution, shape (batch_size, embedding_dim)
+        x1 (torch.Tensor): Target samples from data distribution, shape (batch_size, embedding_dim)
+        cond (torch.Tensor): Condition tensors, shape (batch_size, num_conditions)
+        multiplicator (int): Factor to repeat samples for multiple time samples per data point (default: 1)
+    
+    Returns:
+        torch.Tensor: Scalar MSE loss value
+    """
     if multiplicator > 1:
         x0 = x0.repeat(multiplicator, 1)
         x1 = x1.repeat(multiplicator, 1)
@@ -33,6 +77,19 @@ def compute_loss(fm_model: VectorField, x0, x1, cond, multiplicator: int = 1):
     return F.mse_loss(fm_model(t, xt, cond), ut)
 
 def sample_batch(data_loader, device):
+    """
+    Generator that yields batches with noise samples paired with data samples.
+    
+    For each batch from the data loader, generates random noise samples (x0) and
+    pairs them with actual data embeddings (x1) and conditions.
+    
+    Args:
+        data_loader (DataLoader): Data loader yielding (embeddings, conditions) tuples
+        device (torch.device): Device for tensor allocation
+    
+    Yields:
+        tuple: (x0, x1, cond) where x0 is noise, x1 is data, cond is conditions
+    """
     for x1, cond in data_loader:
         x1 = x1.to(device)
         cond = cond.to(device)
@@ -43,6 +100,26 @@ def sample_batch(data_loader, device):
 def train_model(train_dl: DataLoader, val_dl: DataLoader, fm_model: VectorField, 
                 wandb_run: wandb.Run | None, epochs: int,
                 batch_scale: int, checkpoint_path, lr: float = 5e-4) -> VectorField:
+    """
+    Train flow matching model with validation and checkpointing.
+    
+    Performs training loop with cosine annealing learning rate scheduling, periodic
+    validation, and saves best model based on validation loss. Supports both local
+    logging and Weights & Biases integration.
+    
+    Args:
+        train_dl (DataLoader): Training data loader
+        val_dl (DataLoader): Validation data loader
+        fm_model (VectorField): Flow matching model to train
+        wandb_run (wandb.Run | None): W&B run for logging, or None for local logging
+        epochs (int): Number of training epochs
+        batch_scale (int): Factor to scale batches for increased time sampling
+        checkpoint_path (str): Path to save best model checkpoint
+        lr (float): Learning rate for AdamW optimizer (default: 5e-4)
+    
+    Returns:
+        VectorField: Trained model (loaded from best checkpoint)
+    """
     opt = torch.optim.AdamW(fm_model.parameters(), lr=lr)
     scheduler = CosineAnnealingLR(opt, T_max=epochs)
 
@@ -143,7 +220,7 @@ def main(args, device):
     
     # Compute datasets
     (train_embeddings, val_embeddings), (train_cond, val_cond) = \
-        get_datasets(args.model_path, device, args.labels, split_ratio=0.8, nb_points=args.nb_points)
+        get_embeddings_datasets(args.model_path, device, args.labels, split_ratio=0.8, nb_points=args.nb_points)
 
     nb_train = train_embeddings.size(0)
     nb_embeddings = train_embeddings.size(0) + val_embeddings.size(0)

@@ -1,34 +1,55 @@
+"""
+Flow Matching Model Validation and Visualization Module
+
+This module generates validation plots for a Flow Matching model by comparing
+predictions made with linear regression on original embeddings versus embeddings sampled
+from the flow matching model. It provides visualization of prediction accuracy, embedding
+distributions, and UMAP projections.
+
+Example:
+    To run this script as a module with a Flow Matching model and AstroPT embeddings,
+    generating predictions for 'mass' and 'label' conditions:
+    
+    $ python3 -m scripts.plots.fm_validation \\
+        --fm_model_path model/flow_matching/best_model.pt \\
+        --astropt_model_path model/best_r_ell_model.pt \\
+        --labels mass label \\
+        --nb_points 8000 \\
+        --save_plots
+
+"""
+
 import torch, argparse
 import matplotlib.pyplot as plt
 
-import numpy as np
 from umap import UMAP
 from sklearn.metrics import mean_squared_error, r2_score
 
 from scripts.plots.plot_utils import plot_cross_section_histogram, set_fonts
-from scripts.model_utils import LinearRegression, load_fm_model, get_datasets
+from scripts.model_utils import LinearRegression, load_fm_model, get_embeddings_datasets
 
 def plot_results(fm_model, train_embeddings, train_cond, val_embeddings, val_cond, label_names):
     """
-    Generate all plots for the training results.
-    
+    Generate validation plots comparing generated embeddings with the original AstroPT embeddings.
+
     Args:
-        fm_model: Trained VectorField model
-        train_embeddings: Training embedding tensor
-        val_embeddings: Validation embedding tensor
-        val_cond: Validation conditions dictionary
-        train_avg_meter: Training loss meter
-        val_avg_meter: Validation loss meter
-        args: Argument parser with configuration
+        fm_model (VectorField): Trained flow matching model for sampling embeddings
+        train_embeddings (torch.Tensor): Training set embeddings of shape (N, embedding_dim)
+        train_cond (torch.Tensor): Training set conditions of shape (N, num_conditions)
+        val_embeddings (torch.Tensor): Validation set embeddings of shape (M, embedding_dim)
+        val_cond (torch.Tensor): Validation set conditions of shape (M, num_conditions)
+        label_names (list): List of condition names corresponding to columns in train_cond/val_cond
     
     Returns:
-        figures: List of (figure, name, filename) tuples
-        metrics: Dictionary of computed metrics
+        tuple: 
+            - figures (list): List of (plt.Figure, title_str, filename_str) tuples
+            - metrics (dict): Dictionary mapping condition names to computed MSE and R² scores
     """
     # Make predictions for plots
     lin_reg = LinearRegression(train_embeddings.device).fit(train_embeddings, train_cond)
     lin_preds_array = lin_reg.predict(val_embeddings).cpu().numpy()
 
+    # Sample flow matching embeddings
     vf_embeddings = fm_model.sample_flow(val_cond)
     vf_preds_array = lin_reg.predict(vf_embeddings).cpu().numpy()
 
@@ -43,6 +64,7 @@ def plot_results(fm_model, train_embeddings, train_cond, val_embeddings, val_con
     for cond_name in filter(lambda x: "label" not in x, label_names):
         fig, (lin_ax, fm_ax) = plt.subplots(1, 2, figsize=(12, 6))
 
+        # Plot validation predictions for linear regression
         lin_reg_cond = LinearRegression("cpu").fit(val_cond_dict[cond_name], lin_preds[cond_name])
         slope = lin_reg_cond.weights.item()
         intercept = lin_reg_cond.bias.item()
@@ -59,6 +81,7 @@ def plot_results(fm_model, train_embeddings, train_cond, val_embeddings, val_con
         lin_ax.set_ylabel(f"Predicted {cond_name}")
         lin_ax.legend()
 
+        # Plot validation predictions for flow matching embeddings
         lin_reg_cond = LinearRegression("cpu").fit(val_cond_dict[cond_name], lin_preds[cond_name])
         slope = lin_reg_cond.weights.item()
         intercept = lin_reg_cond.bias.item()
@@ -132,7 +155,7 @@ def main(args, device):
 
     # Compute datasets
     (train_embeddings, val_embeddings), (train_cond, val_cond) = \
-        get_datasets(args.astropt_model_path, device, args.labels, split_ratio=0.8, nb_points=args.nb_points)
+        get_embeddings_datasets(args.astropt_model_path, device, args.labels, split_ratio=0.8, nb_points=args.nb_points)
 
     # Generate plots and metrics
     figures, _ = plot_results(fm_model, train_embeddings, train_cond, val_embeddings, val_cond, args.labels)

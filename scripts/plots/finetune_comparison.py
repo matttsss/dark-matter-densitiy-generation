@@ -1,5 +1,19 @@
 """
-Compare finetuned AstroPT vs pretrained baseline on linear probe
+Fine-tuned vs Baseline Model Comparison and Visualization Module
+
+This module compares the performance of fine-tuned AstroPT models against baseline
+pre-trained models using linear probes. Generates visualizations of prediction distributions
+and quantile comparisons across different condition classes (e.g., cross-sections).
+
+Example:
+    To compare fine-tuned and baseline AstroPT models on label predictions:
+    
+    $ python3 -m scripts.plots.finetune_comparison \\
+        --finetuned_model_path model/finetuned_model.pt \\
+        --baseline_model_path model/ckpt.pt \\
+        --labels label mass \\
+        --nb_points 14000
+
 """
 
 import numpy as np
@@ -10,12 +24,33 @@ from torch.utils.data import DataLoader
 
 from scripts.model_utils import compute_embeddings, load_astropt_model
 from scripts.plots.plot_utils import set_fonts
-from scripts.embedings_utils import merge_datasets
+from scripts.embeddings_utils import merge_datasets
 
 from sklearn.linear_model import LinearRegression
 
 def get_cross_section_stats(embeddings, labels, key):
-    """Train probe and compute median + quantiles for each cross-section class."""
+    """
+    Train linear probe and compute statistics for each cross-section class.
+    
+    Trains a linear regression probe on the first half of data and evaluates on the
+    second half, computing median and percentile estimates (16% and 84%) for each
+    unique value in the target label.
+    
+    Args:
+        embeddings (np.ndarray): Embedding features of shape (num_samples, embedding_dim)
+        labels (dict): Dictionary mapping label names to label arrays
+        key (str): Label key to evaluate on (e.g., 'label', 'log_label')
+    
+    Returns:
+        tuple:
+            - stats (dict): Dictionary mapping unique label values to dicts containing:
+                - 'median': Median predicted value
+                - 'q16': 16% percentile
+                - 'q84': 84% percentile
+                - 'predictions': All predictions for this class
+            - predictions (np.ndarray): Full array of test predictions
+            - test_labels (np.ndarray): True test labels
+    """
     halfway = len(embeddings) // 2
     
     test_embeddings = embeddings[halfway:]
