@@ -1,347 +1,282 @@
 import torch
-from scripts.model_utils import load_fm_model, load_astropt_model
-from scripts.embeddings_utils import merge_datasets
+import numpy as np
+import matplotlib.pyplot as plt
+import argparse
 import os
+import sys
+
+from scripts.model_utils import load_fm_model, load_astropt_model
+from scripts.embedings_utils import merge_datasets
+from generative_model.DDPM import DDPM
 
 
+LABEL_MAP = {0.01: 0, 0.1: 1, 0.3: 2, 1.0: 3}
+LABEL_MAP_INV = {v: k for k, v in LABEL_MAP.items()}
 
-def get_embeddings(
-    device: torch.device,
-    # Option 1: conditioning inputs (→ flow model)
-    mass: float = None,
-    label: float = None,
-    # Option 2: image input (→ AstroPT)
-    image: torch.Tensor = None,
-    positions: torch.Tensor = None,
-    # Config
-    nb_points: int = 300,
-    fm_path: str = "model/flow_ckpt.pt",
-    astropt_path: str = "model/finetuned_ckpt.pt",
-):
-    """
-    Get 768-dim embeddings compatible with DDPM.
+
+# map label in argument to categorical label used in model
+def map_label(label: float) -> int:
+    """Map physical label (0.01, 0.1, 0.3, 1) to model label (0, 1, 2, 3)."""
+    # Find closest key if not exact match
+    closest = min(LABEL_MAP.keys(), key=lambda x: abs(x - label))
+    if abs(closest - label) > 0.01:
+        print(f"Warning: label {label} mapped to closest value {closest}")
+    return LABEL_MAP[closest]
+
+DATASETS = [
+    "data/BAHAMAS/bahamas_0.1.pkl",
+    "data/BAHAMAS/bahamas_0.3.pkl",
+    "data/BAHAMAS/bahamas_1.pkl",
+    "data/BAHAMAS/bahamas_cdm.pkl",
+]
+
+
+def load_ddpm(checkpoint_path: str, device: torch.device) -> DDPM:
+    """Load DDPM model from checkpoint."""
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"DDPM checkpoint not found: {checkpoint_path}")
     
-    Automatically selects model based on input:
-        - image provided       → AstroPT
-        - mass/label provided  → Flow model
-    """
-    has_image = image is not None
-    has_conditioning = mass is not None and label is not None
-
-    if has_image and has_conditioning:
-        raise ValueError("Provide either image OR (mass, label), not both")
-
-    if not has_image and not has_conditioning:
-        raise ValueError("Provide either image OR (mass, label)")
-
-    if has_image:
-        return _embed_with_astropt(device, image, positions, astropt_path)
-    else:
-        return _embed_with_flow(device, mass, label, nb_points, fm_path)
-
-
-def _embed_with_flow(device, mass, label, nb_points, checkpoint_path):
-    """(mass, label) → 768-dim embedding"""
-    model = load_fm_model(checkpoint_path, device)
-    model.eval()
-
-    with torch.no_grad():
-        cond = torch.cat([torch.as_tensor([mass], dtype=torch.float32), 
-                          torch.as_tensor([label], dtype=torch.float32)], dim=-1).to(device)
-        cond = cond.repeat(nb_points, 1)  # Expand to batch size
-        embeddings = model.sample_flow(cond)
-
-    return embeddings
-
-
-def _embed_with_astropt(device, image, positions, checkpoint_path):
-    """Match exactly what diffusion training did"""
-    
-    if not isinstance(image, torch.Tensor):
-        image = torch.as_tensor(image)
-    else:
-        image = image.detach().clone()
-        
-    if not isinstance(positions, torch.Tensor):
-        positions = torch.as_tensor(positions)
-    else:
-        positions = positions.detach().clone()
-
-    # Use the SAME loader as diffusion training
-    # Import from the same place as diffusion_train.py
-    
-    model = load_astropt_model(
-        checkpoint_path=checkpoint_path,
-        device=device
-    )
-    model.eval()
-
-    # Ensure batch dimension
-    if image.dim() == 2:
-        image = image.unsqueeze(0)
-    if positions.dim() == 1:
-        positions = positions.unsqueeze(0)
-
-    with torch.no_grad():
-        batch = {
-            "images": image.to(device),
-            "images_positions": positions.to(device),
-        }
-        # Use generate_embeddings - same as training
-        embeddings = model.generate_embeddings(batch)["images"]
-        
-        print(f"Embeddings shape: {embeddings.shape}")
-        print(f"Range: [{embeddings.min():.4f}, {embeddings.max():.4f}]")
-        print(f"Std: {embeddings.std():.4f}")
-
-    return embeddings
-
-
-def load_ddpm(checkpoint_path: str, device: torch.device):
-    """Load pretrained DDPM model."""
-    from generative_model.DDPM import DDPM
-    
-    if checkpoint_path is None or not os.path.exists(checkpoint_path):
-        raise ValueError(f"Invalid DDPM checkpoint path: {checkpoint_path}")
-    
-    # Match training config
     model = DDPM(
-        patch_size=4,       # Changed from default 10
+        patch_size=4,
         schedule="cosine",
-        timesteps=1000  # Changed from linear
-        # depth=12, timesteps=1000 are defaults
+        timesteps=1000,
     ).to(device)
     
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    if isinstance(checkpoint, dict) and 'ema_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['ema_state_dict'])
+        print(f"Loaded EMA weights from epoch {checkpoint.get('epoch', '?')}")
+    elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Loaded model weights from epoch {checkpoint.get('epoch', '?')}")
+    else:
+        model.load_state_dict(checkpoint)
+        print("Loaded state dict directly")
+    
     model.eval()
     return model
 
-def infer_ddpm(
-    ddpm_model,
-    conditioning_embeddings: torch.Tensor,
-    clamp_output: bool = True,
-    use_ddim: bool = True,        # NEW
-    ddim_steps: int = 50,         # NEW
-    guidance_scale: float = 3.0,  # NEW
-):
+
+def generate_images(
+    ddpm_model: DDPM,
+    embeddings: torch.Tensor,
+    use_ddim: bool = True,
+    ddim_steps: int = 50,
+    guidance_scale: float = 2.0,
+    eta: float = 0.0,
+) -> torch.Tensor:
+    """Generate images from embeddings."""
     device = next(ddpm_model.parameters()).device
-    conditioning_embeddings = conditioning_embeddings.to(device)
+    embeddings = embeddings.to(device)
+    
+    print(f"Generating {embeddings.shape[0]} image(s)...")
+    print(f"  Method: {'DDIM' if use_ddim else 'DDPM'}, steps: {ddim_steps}, guidance: {guidance_scale}")
     
     ddpm_model.eval()
     with torch.no_grad():
         if use_ddim:
-            generated_images = ddpm_model.ddim_sample(
-                conditioning_embeddings, 
-                steps=ddim_steps, 
-                eta=0.0,
-                guidance_scale=guidance_scale
+            images = ddpm_model.ddim_sample(
+                embeddings, steps=ddim_steps, eta=eta, guidance_scale=guidance_scale
             )
         else:
-            generated_images = ddpm_model.sample(
-                conditioning_embeddings,
-                guidance_scale=guidance_scale
-            )
-        
-        if clamp_output:
-            generated_images = (generated_images - generated_images.min()) / (generated_images.max() - generated_images.min() + 1e-8)
+            images = ddpm_model.sample(embeddings, guidance_scale=guidance_scale)
+    
+    images = (images - images.min()) / (images.max() - images.min() + 1e-8)
+    print(f"  Output shape: {images.shape}")
+    return images
 
-    return generated_images
+
+# flow model pipeline
+def run_fm_pipeline(
+    mass: float,
+    label: float,  # can be 0.01, 0.1, 0.3, or 1.0
+    fm_path: str,
+    ddpm_path: str,
+    device: torch.device,
+    ddim_steps: int = 50,
+    guidance_scale: float = 2.0,
+) -> torch.Tensor:
+    model_label = map_label(label)
+    print(f"\n{'='*60}\nFM PIPELINE: mass={mass}, label={label} (model: {model_label})\n{'='*60}")
+    
+    fm_model = load_fm_model(fm_path, device)
+    fm_model.eval()
+    
+    with torch.no_grad():
+        cond = torch.tensor([[mass, model_label]], dtype=torch.float32, device=device)  # Use model_label
+        embeddings = fm_model.sample_flow(cond)
+    print(f"Embedding: shape={embeddings.shape}, mean={embeddings.mean():.4f}, std={embeddings.std():.4f}")
+    
+    ddpm_model = load_ddpm(ddpm_path, device)
+    return generate_images(ddpm_model, embeddings, ddim_steps=ddim_steps, guidance_scale=guidance_scale)
+
+
+def run_fm_batch(
+    masses: list,
+    labels: list,  # can be 0.01, 0.1, 0.3, or 1.0
+    fm_path: str,
+    ddpm_path: str,
+    device: torch.device,
+    ddim_steps: int = 50,
+    guidance_scale: float = 2.0,
+) -> torch.Tensor:
+    model_labels = [map_label(l) for l in labels]    
+    fm_model = load_fm_model(fm_path, device)
+    fm_model.eval()
+    ddpm_model = load_ddpm(ddpm_path, device)
+    
+    with torch.no_grad():
+        cond = torch.tensor(list(zip(masses, model_labels)), dtype=torch.float32, device=device)  # Use model_labels
+        embeddings = fm_model.sample_flow(cond)
+    
+    return generate_images(ddpm_model, embeddings, ddim_steps=ddim_steps, guidance_scale=guidance_scale)
+
+
+# astropt pipeline
+
+def run_astropt_pipeline(
+    sample_idx: int,
+    astropt_path: str,
+    ddpm_path: str,
+    device: torch.device,
+    ddim_steps: int = 50,
+    guidance_scale: float = 2.0,
+) -> tuple[torch.Tensor, np.ndarray, dict]:
+    """AstroPT pipeline: image → embedding → reconstruction"""
+    print(f"\n{'='*60}\nASTROPT PIPELINE: sample_idx={sample_idx}\n{'='*60}")
+    
+    dataset = merge_datasets(DATASETS).select_columns(["images", "images_positions", "mass", "label"])
+    dataset_images = merge_datasets(DATASETS, image_only=True)
+    
+    sample = dataset[sample_idx]
+    original = np.array(dataset_images[sample_idx]["image"])
+    metadata = {"mass": sample["mass"], "label": sample["label"], "idx": sample_idx}
+    print(f"Sample: mass={metadata['mass']:.4f}, label={metadata['label']}")
+    
+    astropt_model = load_astropt_model(checkpoint_path=astropt_path, device=device)
+    astropt_model.eval()
+    
+    image = torch.as_tensor(sample["images"]).unsqueeze(0) if torch.as_tensor(sample["images"]).dim() == 2 else torch.as_tensor(sample["images"])
+    positions = torch.as_tensor(sample["images_positions"]).unsqueeze(0) if torch.as_tensor(sample["images_positions"]).dim() == 1 else torch.as_tensor(sample["images_positions"])
+    
+    with torch.no_grad():
+        batch = {"images": image.to(device), "images_positions": positions.to(device)}
+        embeddings = astropt_model.generate_embeddings(batch)["images"]
+    print(f"Embedding: shape={embeddings.shape}, mean={embeddings.mean():.4f}, std={embeddings.std():.4f}")
+    
+    ddpm_model = load_ddpm(ddpm_path, device)
+    generated = generate_images(ddpm_model, embeddings, ddim_steps=ddim_steps, guidance_scale=guidance_scale)
+    
+    return generated, original, metadata
+
+
+# plots for flow model results
+def plot_fm_result(image: np.ndarray, mass: float, label: float, save_path: str = None):
+    """Plot FM generation."""
+    plt.figure(figsize=(6, 5))
+    plt.imshow(image, cmap='viridis')
+    plt.title(f"FM Generated\nmass={mass:.2f}, label={label:.0f}")
+    plt.colorbar()
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150)
+        print(f"Saved: {save_path}")
+    plt.close()
+
+
+
+
+def plot_astropt_result(original: np.ndarray, generated: np.ndarray, metadata: dict, save_path: str = None):
+    """Plot AstroPT original vs reconstruction."""
+    from scipy.stats import pearsonr
+    from skimage.transform import resize
+    
+    # Handle original format
+    if original.ndim == 3:
+        original = original[0] if original.shape[0] in [1, 3] else original[:, :, 0]
+    
+    orig_norm = (original - original.min()) / (original.max() - original.min() + 1e-8)
+    if orig_norm.shape != generated.shape:
+        orig_resized = resize(orig_norm, generated.shape, anti_aliasing=True)
+    else:
+        orig_resized = orig_norm
+    
+    corr, _ = pearsonr(orig_resized.flatten(), generated.flatten())
+    
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    
+    vmin, vmax = min(orig_norm.min(), generated.min()), max(orig_norm.max(), generated.max())
+    
+    im0 = axes[0].imshow(orig_norm, cmap='viridis', vmin=vmin, vmax=vmax)
+    axes[0].set_title(f"Original (idx={metadata['idx']})\nmass={metadata['mass']:.2f}, label={metadata['label']:.0f}")
+    plt.colorbar(im0, ax=axes[0], shrink=0.8)
+    
+    im1 = axes[1].imshow(generated, cmap='viridis', vmin=vmin, vmax=vmax)
+    axes[1].set_title(f"Reconstruction\nCorr: {corr:.3f}")
+    plt.colorbar(im1, ax=axes[1], shrink=0.8)
+    
+    diff = orig_resized - generated
+    im2 = axes[2].imshow(diff, cmap='RdBu', vmin=-0.5, vmax=0.5)
+    axes[2].set_title(f"Difference\nMAE: {np.abs(diff).mean():.3f}")
+    plt.colorbar(im2, ax=axes[2], shrink=0.8)
+    
+    for ax in axes:
+        ax.axis('off')
+    
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150)
+        print(f"Saved: {save_path}")
+    plt.close()
 
 
 if __name__ == "__main__":
-    import argparse
-    import matplotlib.pyplot as plt
-    import numpy as np
+    parser = argparse.ArgumentParser(description="DDPM inference for FM or AstroPT pipelines")
     
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--fm_path", type=str, default="model_weights/fm.pt", help="Path to flow model checkpoint")
-    parser.add_argument("--astropt_path", type=str, default="model_weights/finetuned_contrastive_ckpt.pt", help="Path to AstroPT checkpoint")
-    parser.add_argument("--ddpm_path", type=str, default="model_weights/final_diffusion_model_1000.pt", help="Path to DDPM checkpoint")
-    parser.add_argument("--mass", type=float, help="Mass value for conditioning")
-    parser.add_argument("--label", type=float, help="Label value for conditioning")
-    parser.add_argument("--sample_idx", type=int, help="Index of sample from BAHAMAS dataset")
-    parser.add_argument("--nb_images", type=int, default=10, help="Number of images to generate")
-    parser.add_argument("--output_path", type=str, default="generated_images.pt", help="Output path")
-    parser.add_argument("--save_png", action="store_true", help="Save as PNG image")
+    parser.add_argument("--mode", type=str, choices=["fm", "astropt"], required=True)
+    
+    # FM mode
+    parser.add_argument("--mass", type=float, help="Mass value (FM mode)")
+    parser.add_argument("--label", type=float, help="Label value (FM mode)")
+    parser.add_argument("--fm_path", type=str, default="model_weights/flowmodel.pt")
+    parser.add_argument("--mass_min", type=float, default=13.5)
+    parser.add_argument("--mass_max", type=float, default=15.5)
+    
+    # AstroPT mode
+    parser.add_argument("--sample_idx", type=int, help="Sample index (AstroPT mode)")
+    parser.add_argument("--astropt_path", type=str, default="model_weights/finetunedastroptcheckpoint.pt")
+    
+    # Shared
+    parser.add_argument("--ddim_steps", type=int, default=50)
+    parser.add_argument("--guidance_scale", type=float, default=2.0)
+    parser.add_argument("--output", type=str, default="generated.pt")
+    parser.add_argument("--save_png", type=str, default="generated.png")
+    
     args = parser.parse_args()
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    ddpm_fm = "model_weights/flowmodelddpm.pt"
+    ddpm_astropt = "model_weights/astroptddpm.pt"
     
-    original_image = None  # Will store original if using sample_idx
-
-    if args.sample_idx is not None:
-        # Load embeddings dataset
-        dataset = merge_datasets([
-            "data/BAHAMAS/bahamas_0.1.pkl",
-            "data/BAHAMAS/bahamas_0.3.pkl",
-            "data/BAHAMAS/bahamas_1.pkl",
-            "data/BAHAMAS/bahamas_cdm.pkl",
-        ], feature_names=["mass", "label"])
+    if args.mode == "fm":
+        if args.label is None:
+            parser.error("FM mode requires --label")
+            if args.mass is None:
+                parser.error("FM mode requires --mass or --mass_sweep")
+            images = run_fm_pipeline(args.mass, args.label, args.fm_path, ddpm_fm, device,
+                                     args.ddim_steps, args.guidance_scale)
+            torch.save(images, args.output)
+            plot_fm_result(images[0, 0].cpu().numpy(), args.mass, args.label, args.save_png)
+    
+    elif args.mode == "astropt":
+        if args.sample_idx is None:
+            parser.error("AstroPT mode requires --sample_idx")
         
-        # Load raw images dataset
-        dataset_images = merge_datasets([
-            "data/BAHAMAS/bahamas_0.1.pkl",
-            "data/BAHAMAS/bahamas_0.3.pkl",
-            "data/BAHAMAS/bahamas_1.pkl",
-            "data/BAHAMAS/bahamas_cdm.pkl",
-        ], image_only=True)
-        
-        sample = dataset[args.sample_idx]
-        original_image = np.array(dataset_images[args.sample_idx]["image"])
-        
-        image = torch.as_tensor(sample["images"])
-        positions = torch.as_tensor(sample["images_positions"])
-        
-        print("=" * 60)
-        print("DEBUG: Sample Info")
-        print("=" * 60)
-        print(f"Sample index: {args.sample_idx}")
-        print(f"Mass: {sample['mass']}")
-        print(f"Label: {sample['label']}")
-        
-        print("\n" + "=" * 60)
-        print("DEBUG: Original Image Stats")
-        print("=" * 60)
-        print(f"Shape: {original_image.shape}")
-        print(f"Dtype: {original_image.dtype}")
-        print(f"Range: [{original_image.min():.6f}, {original_image.max():.6f}]")
-        print(f"Mean: {original_image.mean():.6f}")
-        print(f"Std: {original_image.std():.6f}")
-        
-        print("\n" + "=" * 60)
-        print("DEBUG: Pre-computed Embeddings (from dataset)")
-        print("=" * 60)
-        print(f"Shape: {image.shape}")
-        print(f"Dtype: {image.dtype}")
-        print(f"Range: [{image.min():.6f}, {image.max():.6f}]")
-        print(f"Mean: {image.mean():.6f}")
-        print(f"Std: {image.std():.6f}")
-        
-        print("\n" + "=" * 60)
-        print("DEBUG: Positions")
-        print("=" * 60)
-        print(f"Shape: {positions.shape}")
-        print(f"Range: [{positions.min():.6f}, {positions.max():.6f}]")
-        
-        embeddings = get_embeddings(
-            device,
-            image=image,
-            positions=positions,
-            astropt_path=args.astropt_path,
-        )
-        
-        print("\n" + "=" * 60)
-        print("DEBUG: Pooled Embeddings (input to DDPM)")
-        print("=" * 60)
-        print(f"Shape: {embeddings.shape}")
-        print(f"Range: [{embeddings.min():.6f}, {embeddings.max():.6f}]")
-        print(f"Mean: {embeddings.mean():.6f}")
-        print(f"Std: {embeddings.std():.6f}")
-        
-        # Compare with training embeddings if possible
-        print("\n" + "=" * 60)
-        print("DEBUG: Checking against training data format")
-        print("=" * 60)
-        
-        # Load a few samples to check consistency
-        train_embeddings_sample = torch.as_tensor(dataset[0]["images"])
-        print(f"Train sample 0 embeddings shape: {train_embeddings_sample.shape}")
-        print(f"Train sample 0 embeddings range: [{train_embeddings_sample.min():.6f}, {train_embeddings_sample.max():.6f}]")
-        
-        # Check if pooling matches what training did
-        pooled_train = train_embeddings_sample.mean(dim=0)
-        print(f"Train sample 0 pooled shape: {pooled_train.shape}")
-        print(f"Train sample 0 pooled range: [{pooled_train.min():.6f}, {pooled_train.max():.6f}]")
-        
-        print("\n" + "=" * 60)
-        
-    elif args.mass is not None and args.label is not None:
-        embeddings = get_embeddings(
-            device,
-            mass=args.mass,
-            label=args.label,
-            nb_points=args.nb_images,
-            fm_path=args.fm_path,
-        )
-    else:
-        raise ValueError("Provide either --sample_idx or both --mass and --label")
-
-    ddpm_model = load_ddpm(args.ddpm_path, device)
-    generated_images = infer_ddpm(ddpm_model, embeddings)
-
-    print("Generated images shape:", generated_images.shape)
-    torch.save(generated_images, args.output_path)
-    print(f"Generated images saved to {args.output_path}")
-
-    if args.save_png:
-        for i, gen_img in enumerate(generated_images):
-            gen_np = gen_img[0].cpu().numpy()
-            
-            if original_image is not None:
-                fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-                
-                # Handle different original image formats
-                print(f"Original shape: {original_image.shape}")
-                
-                if original_image.ndim == 3:
-                    # Could be (H, W, C) or (C, H, W)
-                    if original_image.shape[-1] in [1, 3]:
-                        # (H, W, C) format
-                        orig_display = original_image[:, :, 0]
-                    elif original_image.shape[0] in [1, 3]:
-                        # (C, H, W) format
-                        orig_display = original_image[0, :, :]
-                    else:
-                        # Unknown, try first slice
-                        orig_display = original_image[:, :, 0]
-                elif original_image.ndim == 2:
-                    orig_display = original_image
-                elif original_image.ndim == 1:
-                    # 1D array - try to reshape to square
-                    side = int(np.sqrt(len(original_image)))
-                    if side * side == len(original_image):
-                        orig_display = original_image.reshape(side, side)
-                    else:
-                        print(f"Warning: Cannot reshape 1D array of length {len(original_image)} to square")
-                        orig_display = original_image.reshape(-1, 100)  # fallback
-                else:
-                    orig_display = original_image
-                    
-                print(f"Display shape: {orig_display.shape}")
-                
-                # Original
-                im0 = axes[0].imshow(orig_display, cmap="viridis")
-                axes[0].set_title(f"Original (idx={args.sample_idx})\nShape: {orig_display.shape}")
-                plt.colorbar(im0, ax=axes[0])
-                
-                # Generated
-                im1 = axes[1].imshow(gen_np, cmap="viridis")
-                axes[1].set_title(f"Generated\nShape: {gen_np.shape}")
-                plt.colorbar(im1, ax=axes[1])
-                
-                # Difference
-                from skimage.transform import resize
-                if orig_display.shape != gen_np.shape:
-                    orig_resized = resize(orig_display, gen_np.shape, anti_aliasing=True)
-                else:
-                    orig_resized = orig_display
-                
-                orig_norm = (orig_resized - orig_resized.min()) / (orig_resized.max() - orig_resized.min() + 1e-8)
-                gen_norm = (gen_np - gen_np.min()) / (gen_np.max() - gen_np.min() + 1e-8)
-                diff = orig_norm - gen_norm
-                
-                im2 = axes[2].imshow(diff, cmap="RdBu", vmin=-1, vmax=1)
-                axes[2].set_title("Difference (Original - Generated)")
-                plt.colorbar(im2, ax=axes[2])
-                
-                plt.tight_layout()
-                plt.savefig(f"comparison_{i}.png", dpi=150)
-                plt.close()
-
-            else: 
-                plt.figure(figsize=(5, 5))
-                plt.imshow(gen_np, cmap="viridis")
-                plt.title(f"Generated Image {i}\nShape: {gen_np.shape}")
-                plt.colorbar()
-                plt.savefig(f"generated_{i}.png", dpi=150)
-                plt.close()
+        generated, original, metadata = run_astropt_pipeline(
+            args.sample_idx, args.astropt_path, ddpm_astropt, device, args.ddim_steps, args.guidance_scale)
+        torch.save(generated, args.output)
+        plot_astropt_result(original, generated[0, 0].cpu().numpy(), metadata, args.save_png)
+    
+    print(f"Saved: {args.output}")
