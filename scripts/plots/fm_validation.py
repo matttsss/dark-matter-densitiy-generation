@@ -59,15 +59,18 @@ def plot_results(fm_model, train_embeddings, train_cond, val_embeddings, val_con
         lin_ax.set_ylabel(f"Predicted {cond_name}")
         lin_ax.legend()
 
-        rel_diff = np.abs(lin_preds[cond_name] - val_cond_dict[cond_name]) / np.maximum(np.abs(val_cond_dict[cond_name]), 1e-6)
+        lin_reg_cond = LinearRegression("cpu").fit(val_cond_dict[cond_name], lin_preds[cond_name])
+        slope = lin_reg_cond.weights.item()
+        intercept = lin_reg_cond.bias.item()
         mse = mean_squared_error(val_cond_dict[cond_name], vf_preds[cond_name])
         r2 = r2_score(val_cond_dict[cond_name], vf_preds[cond_name])
 
-        ax_col = fm_ax.scatter(val_cond_dict[cond_name], vf_preds[cond_name], c=rel_diff, alpha=0.3)
-        cbar = fig.colorbar(ax_col, ax=fm_ax, label='Relative difference')
-        fm_ax.plot(val_cond_dict[cond_name], val_cond_dict[cond_name] * slope + intercept, color='red')
+        fm_ax.scatter(val_cond_dict[cond_name], vf_preds[cond_name], alpha=0.3)
+        fm_ax.plot(val_cond_dict[cond_name], val_cond_dict[cond_name] * slope + intercept, 
+                    label=f"y={slope:.2f}x + {intercept:.2f}", color='red')
+        fm_ax.legend()
 
-        fm_ax.set_title(f"Predictions with FM embeddings for {cond_name} \nMSE: {mse:.4f}, R2: {r2:.4f}")
+        fm_ax.set_title(f"Predictions with FM embeddings for {cond_name}\nMSE: {mse:.4f}, R2: {r2:.4f}")
         fm_ax.set_xlabel(f"Ground truth {cond_name}")
         fm_ax.set_ylabel(f"Predicted {cond_name}")
 
@@ -101,6 +104,7 @@ def plot_results(fm_model, train_embeddings, train_cond, val_embeddings, val_con
 
         metrics[key + "_mse"] = mse
         metrics[key + "_r2"] = r2
+        fig.tight_layout()
 
         figures.append((fig, f"{key} Predictions", f"{key}_predictions.png"))
 
@@ -113,9 +117,7 @@ def plot_results(fm_model, train_embeddings, train_cond, val_embeddings, val_con
     axs[0].scatter(val_umap[:, 0], val_umap[:, 1], alpha=0.3)
     axs[0].set_title("UMAP of Validation Embeddings")
 
-    diff_umap = np.linalg.norm(val_umap - vf_umap_embeddings, axis=-1)
-    ax_col = axs[1].scatter(vf_umap_embeddings[:, 0], vf_umap_embeddings[:, 1], c=diff_umap, alpha=0.3)
-    cbar = fig.colorbar(ax_col, ax=axs[1], label='L2 difference')
+    axs[1].scatter(vf_umap_embeddings[:, 0], vf_umap_embeddings[:, 1], alpha=0.3)
     axs[1].set_title("UMAP of Flow Matching Embeddings")
 
     fig.tight_layout()

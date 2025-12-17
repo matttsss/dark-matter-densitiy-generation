@@ -136,7 +136,6 @@ def main(args, device):
                 "sigma": args.sigma,
                 "ot_method": args.ot_method,
                 "encoding_size": args.encoding_size,
-                "mlp_depth": args.mlp_depth,
                 "mlp_hidden_dim": args.mlp_hidden_dim,
                 "astropt_model": model_name
             }
