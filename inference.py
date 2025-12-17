@@ -6,7 +6,7 @@ import os
 import sys
 
 from scripts.model_utils import load_fm_model, load_astropt_model
-from scripts.embedings_utils import merge_datasets
+from scripts.embeddings_utils import merge_datasets
 from generative_model.DDPM import DDPM
 
 
@@ -245,7 +245,7 @@ if __name__ == "__main__":
     
     # AstroPT mode
     parser.add_argument("--sample_idx", type=int, help="Sample index (AstroPT mode)")
-    parser.add_argument("--astropt_path", type=str, default="model_weights/finetunedastroptcheckpoint.pt")
+    parser.add_argument("--astropt_path", type=str, default="model_weights/finetuned_astropt.pt")
     
     # Shared
     parser.add_argument("--ddim_steps", type=int, default=50)
@@ -257,8 +257,8 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    ddpm_fm = "model_weights/flowmodelddpm.pt"
-    ddpm_astropt = "model_weights/astroptddpm.pt"
+    ddpm_fm = "model_weights/flow_model_ddpm.pt"
+    ddpm_astropt = "model_weights/astropt_ddpm.pt"
     
     if args.mode == "fm":
         if args.label is None:
