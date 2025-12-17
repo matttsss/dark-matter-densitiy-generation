@@ -25,8 +25,8 @@ from scipy.stats import pearsonr, skew, kurtosis
 from sklearn.linear_model import Ridge
 from sklearn.metrics import r2_score
 
-from scripts.model_utils import load_astropt_model, load_fm_model
-from scripts.embedings_utils import merge_datasets, compute_embeddings
+from scripts.model_utils import compute_embeddings, load_astropt_model, load_fm_model
+from scripts.embedings_utils import merge_datasets
 from generative_model.DDPM import DDPM
 
 LABEL_NAMES = ["mass", "label"]

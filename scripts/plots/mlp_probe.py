@@ -15,7 +15,7 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler
 
 from scripts.embedings_utils import merge_datasets, batch_to_device
-from scripts.plot_utils import plot_labels
+from scripts.plots.plot_utils import plot_labels
 from scripts.model_utils import load_astropt_model
 
 

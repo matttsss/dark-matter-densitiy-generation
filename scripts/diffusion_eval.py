@@ -30,6 +30,8 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import sys
+
+from scripts.model_utils import compute_embeddings
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from torch.utils.data import DataLoader
@@ -42,7 +44,7 @@ from umap import UMAP
 from generative_model.DDPM import DDPM
 from generative_model.DiT import DiT
 from model_utils import load_model
-from embedings_utils import merge_datasets, compute_embeddings
+from embedings_utils import merge_datasets
 
 
 # -------------------------------------------------------------------------

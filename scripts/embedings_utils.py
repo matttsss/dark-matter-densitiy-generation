@@ -2,11 +2,8 @@
 import numpy as np
 import einops, torch, pickle, os
 
-from tqdm.auto import tqdm
 from torch.nn.functional import interpolate
 from datasets import concatenate_datasets, Dataset
-
-from scripts.model_utils import batch_to_device
 
 def spiralise(galaxy):
         """
@@ -186,23 +183,3 @@ def normalize_features(
         return normalized_dataset, normalized_val_dataset
     
     return normalized_dataset
-
-@torch.no_grad()
-def compute_embeddings(model, dataloader, device: torch.device, label_names: list[str],
-                       disable_tqdm: bool = False):
-    model.eval()
-
-    all_embeddings = []
-    all_labels = {label: [] for label in label_names}
-    
-    for B in tqdm(dataloader, disable=disable_tqdm):
-        B = batch_to_device(B, device)
-        embeddings = model.generate_embeddings(B)["images"]
-        all_embeddings.append(embeddings)
-
-        for label in label_names:
-            all_labels[label].append(B[label])
-
-    all_embeddings = torch.cat(all_embeddings, dim=0)
-    all_labels = {label: torch.cat(all_labels[label], dim=0) for label in label_names}
-    return all_embeddings, all_labels

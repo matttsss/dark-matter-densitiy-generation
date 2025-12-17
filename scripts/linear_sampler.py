@@ -4,8 +4,8 @@ from umap import UMAP
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
-from scripts.model_utils import LinearRegression, load_astropt_model
-from scripts.embedings_utils import merge_datasets, compute_embeddings
+from scripts.model_utils import LinearRegression, compute_embeddings, load_astropt_model
+from scripts.embedings_utils import merge_datasets
 
 if __name__ == "__main__":
     import argparse

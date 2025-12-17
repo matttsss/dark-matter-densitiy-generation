@@ -5,8 +5,8 @@ from dataclasses import asdict
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from scripts.embedings_utils import merge_datasets, compute_embeddings
-from scripts.model_utils import LinearRegression, batch_to_device, load_astropt_model
+from scripts.embedings_utils import merge_datasets
+from scripts.model_utils import LinearRegression, batch_to_device, compute_embeddings, load_astropt_model
 
 argparser = argparse.ArgumentParser(description="Fine-tune AstroPT model on new tasks.")
 argparser.add_argument("--pretrained_path", type=str, default="model/ckpt.pt",

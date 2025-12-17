@@ -1,9 +1,64 @@
 import torch
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 
 from astropt.model import GPT, GPTConfig
-from generative_model.hash_grid_encoding import MultiResHashGrid
+from tqdm.auto import tqdm
 from generative_model.vector_field import VectorField, VectorFieldConfig
+from scripts.embedings_utils import merge_datasets
+
+
+@torch.no_grad()
+def compute_embeddings(model, dataloader, device: torch.device, label_names: list[str],
+                       disable_tqdm: bool = False):
+    model.eval()
+
+    all_embeddings = []
+    all_labels = {label: [] for label in label_names}
+
+    for B in tqdm(dataloader, disable=disable_tqdm):
+        B = batch_to_device(B, device)
+        embeddings = model.generate_embeddings(B)["images"]
+        all_embeddings.append(embeddings)
+
+        for label in label_names:
+            all_labels[label].append(B[label])
+
+    all_embeddings = torch.cat(all_embeddings, dim=0)
+    all_labels = {label: torch.cat(all_labels[label], dim=0) for label in label_names}
+    return all_embeddings, all_labels
+
+def get_datasets(model_path, device, label_names, split_ratio=0.8, nb_points=14000):
+    model = load_astropt_model(model_path, device=device, strict=True)
+    dataset = merge_datasets([
+        "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
+        "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
+        "data/DarkData/BAHAMAS/bahamas_1.pkl",
+        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"],
+        feature_names=label_names, stack_features=False) \
+            .shuffle(seed=42) \
+            .take(nb_points)    
+
+    has_metals = device.type == 'mps'
+    dl = DataLoader(
+        dataset,
+        batch_size = 64 if has_metals else 512,
+        num_workers = 0 if has_metals else 4,
+        prefetch_factor = None if has_metals else 3
+    )
+
+    embeddings, cond_dict = compute_embeddings(model, dl, device, label_names)
+    cond = torch.stack([cond_dict[k] for k in label_names], dim=-1)
+
+    # Split into train and val
+    nb_train = int(split_ratio * embeddings.size(0))
+
+    train_embeddings = embeddings[:nb_train]
+    val_embeddings = embeddings[nb_train:]
+    train_cond = cond[:nb_train]
+    val_cond = cond[nb_train:]
+
+    return (train_embeddings, val_embeddings), (train_cond, val_cond)
 
 class LinearRegression:
 

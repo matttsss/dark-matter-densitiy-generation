@@ -10,9 +10,9 @@ import matplotlib.pyplot as plt
 
 from torch.utils.data import DataLoader
 
-from scripts.model_utils import load_astropt_model
-from scripts.plot_utils import plot_labels
-from scripts.embedings_utils import merge_datasets, compute_embeddings
+from scripts.model_utils import compute_embeddings, load_astropt_model
+from scripts.plots.plot_utils import plot_labels, set_fonts
+from scripts.embedings_utils import merge_datasets
 
 from umap import UMAP
 from sklearn.preprocessing import StandardScaler
@@ -29,6 +29,9 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, default="model/ckpt.pt", help='Path to the model checkpoint')
     parser.add_argument('--output_path', type=str, default="figures/finetuned", help='Path to save the output figures')
     args = parser.parse_args()
+    
+    # Set fonts for plots
+    set_fonts()
     
     labels_name = args.labels  
 

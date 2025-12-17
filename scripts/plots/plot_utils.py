@@ -6,6 +6,19 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
 
+def set_fonts(**font_sizes):
+    SMALL_SIZE = 16
+    MEDIUM_SIZE = 18
+    BIGGER_SIZE = 20
+
+    plt.rc('font', size=font_sizes.get('font', SMALL_SIZE))                 # controls default text sizes
+    plt.rc('axes', titlesize=font_sizes.get('axes_title', MEDIUM_SIZE))     # fontsize of the axes title
+    plt.rc('axes', labelsize=font_sizes.get('axes_label', MEDIUM_SIZE))     # fontsize of the x and y labels
+    plt.rc('xtick', labelsize=font_sizes.get('xtick', MEDIUM_SIZE))         # fontsize of the tick labels
+    plt.rc('ytick', labelsize=font_sizes.get('ytick', MEDIUM_SIZE))         # fontsize of the tick labels
+    plt.rc('legend', fontsize=font_sizes.get('legend', MEDIUM_SIZE))        # legend fontsize
+    plt.rc('figure', titlesize=font_sizes.get('figure_title', BIGGER_SIZE)) # fontsize of the figure title
+
 #embeddings, umap_embeddings, labels_dict, 
 def plot_labels(plot_func, title, label_names: list[str], **kwargs):
     """Generic function to plot multiple labels in a grid using a provided plotting function
@@ -49,7 +62,7 @@ def plot_cross_section_histogram(ax, ref_values, pred_values, pred_method_name, 
         ax.hist(pred_values[mask], alpha=alpha, bins=nbins,
                 range=bin_range, label=f'$\\sigma_{{{label:.2f}}}$: {mean_lin_pred:.2f} ± {std_lin_pred:.2f}')
 
-    ax.set_title(f"Predicting $\\sigma$ with {pred_method_name}")
+    ax.set_title(pred_method_name)
     ax.set_xlabel("Ground truth $\\sigma$")
     ax.set_ylabel("Predicted $\\sigma$")
     ax.legend()
