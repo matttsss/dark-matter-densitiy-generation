@@ -684,7 +684,8 @@ def load_astropt_datasets(model_path: str, device: torch.device, batch_size: int
 
 def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
                     epochs: int = 200, batch_size: int = 32, 
-                    resume: str | None = None, auto_resume: bool = False, use_astropt: bool = True):
+                    resume: str | None = None, auto_resume: bool = False, use_astropt: bool = True,
+                    use_wandb: bool = False):
     """Training with resumption and full metrics."""
 
     device = torch.device(
@@ -767,14 +768,17 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
     # -------------------------------------------------
     # 4) Initialize Weights & Biases
     # -------------------------------------------------
-    run = wandb.init(
-        entity="matttsss-epfl",
-        project="astropt_diffusion",
-        name=f"Diffusion v4 - T={timesteps}",
-        id=wandb_id,
-        resume="must" if wandb_id else None,
-        config={"timesteps": timesteps, "epochs": epochs, "batch_size": batch_size}
-    )
+    if use_wandb:
+        run = wandb.init(
+            entity="matttsss-epfl",
+            project="astropt_diffusion",
+            name=f"Diffusion v4 - T={timesteps}",
+            id=wandb_id,
+            resume="must" if wandb_id else None,
+            config={"timesteps": timesteps, "epochs": epochs, "batch_size": batch_size}
+        )
+    else:
+        run = None
 
     def save_checkpoint(epoch, is_best_loss=False, is_best_r_ell=False, is_periodic=False):
         """Save full training state."""
@@ -914,7 +918,8 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
         else:
             print()
 
-        run.log(log_dict)
+        if run is not None:
+            run.log(log_dict)
         # Print summary
         print(f"Epoch {epoch}: train={train_loss:.4f}, val={val_loss:.4f}", end="")
 
@@ -934,7 +939,8 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
     # Save final model
     torch.save(ema_model.state_dict(), os.path.join(output_dir, f"final_diffusion_model_{timesteps}.pt"))
     
-    run.finish()
+    if run is not None:
+        run.finish()
     print(f"\nTraining complete! Best r(ℓ)={best_r_ell:.4f}")
 
 
@@ -948,6 +954,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint")
     parser.add_argument("--auto_resume", action="store_true", help="Auto-resume from latest")
+    parser.add_argument("--use_wandb", action="store_true", help="Enable Weights & Biases logging")
     args = parser.parse_args()
 
     training_script(
@@ -958,5 +965,6 @@ if __name__ == "__main__":
         args.batch_size,
         args.resume,
         args.auto_resume,
-        args.model_type == "astropt"
+        args.model_type == "astropt",
+        args.use_wandb
     )
