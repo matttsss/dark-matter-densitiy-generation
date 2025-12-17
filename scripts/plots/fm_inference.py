@@ -72,10 +72,10 @@ def main(args, device):
     # =============== Load datasets ===================
     merged_labels = fm_model.config.conditions + [label_name for label_name in args.labels if label_name not in fm_model.config.conditions]
     dataset = merge_datasets([
-        "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
-        "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
-        "data/DarkData/BAHAMAS/bahamas_1.pkl",
-        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"],
+        "data/BAHAMAS/bahamas_0.1.pkl", 
+        "data/BAHAMAS/bahamas_0.3.pkl", 
+        "data/BAHAMAS/bahamas_1.pkl",
+        "data/BAHAMAS/bahamas_cdm.pkl"],
             feature_names=merged_labels, stack_features=False) \
             .shuffle(seed=42) \
             .take(args.nb_points)

@@ -84,10 +84,10 @@ def get_embeddings_datasets(model_path, device, label_names, split_ratio=0.8, nb
     """
     model = load_astropt_model(model_path, device=device, strict=True)
     dataset = merge_datasets([
-        "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
-        "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
-        "data/DarkData/BAHAMAS/bahamas_1.pkl",
-        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"],
+        "data/BAHAMAS/bahamas_0.1.pkl", 
+        "data/BAHAMAS/bahamas_0.3.pkl", 
+        "data/BAHAMAS/bahamas_1.pkl",
+        "data/BAHAMAS/bahamas_cdm.pkl"],
         feature_names=label_names, stack_features=False) \
             .shuffle(seed=42) \
             .take(nb_points)    

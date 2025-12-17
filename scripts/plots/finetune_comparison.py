@@ -108,10 +108,10 @@ if __name__ == "__main__":
 
     # Create dataset
     dataset = merge_datasets([
-        "data/DarkData/BAHAMAS/bahamas_0.1.pkl", 
-        "data/DarkData/BAHAMAS/bahamas_0.3.pkl", 
-        "data/DarkData/BAHAMAS/bahamas_1.pkl",
-        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"], 
+        "data/BAHAMAS/bahamas_0.1.pkl", 
+        "data/BAHAMAS/bahamas_0.3.pkl", 
+        "data/BAHAMAS/bahamas_1.pkl",
+        "data/BAHAMAS/bahamas_cdm.pkl"], 
         args.labels, stack_features=False) \
         .shuffle(seed=42) \
         .take(args.nb_points)
