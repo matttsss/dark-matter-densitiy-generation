@@ -16,6 +16,6 @@ data/
 cache/
 logs/
 figures/
-model/
+model_weights/
 
 results_diffusion/
