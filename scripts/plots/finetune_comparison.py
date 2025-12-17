@@ -9,8 +9,8 @@ Example:
     To compare fine-tuned and baseline AstroPT models on label predictions:
     
     $ python3 -m scripts.plots.finetune_comparison \\
-        --finetuned_model_path model/finetuned_model.pt \\
-        --baseline_model_path model/ckpt.pt \\
+        --finetuned_model_path model_weights/finetuned_model.pt \\
+        --baseline_model_path model_weights/baseline_model.pt \\
         --labels label mass \\
         --nb_points 14000
 
@@ -89,8 +89,8 @@ if __name__ == "__main__":
     
     parser.add_argument('--nb_points', type=int, default=14000)
     parser.add_argument('--labels', nargs='+', default=["label", "mass"])
-    parser.add_argument('--finetuned_model_path', type=str, default="model_weights/finetuned_contrastive_ckpt.pt")
-    parser.add_argument('--baseline_model_path', type=str, default="model_weights/baseline_contrastive_ckpt.pt")
+    parser.add_argument('--finetuned_model_path', type=str, default="model_weights/finetuned_astropt.pt")
+    parser.add_argument('--baseline_model_path', type=str, default="model_weights/baseline_astropt.pt")
     args = parser.parse_args()
     
     # Set plotting font size

@@ -26,7 +26,7 @@ if __name__ == "__main__":
     
     parser.add_argument('--nb_points', type=int, default=1000, help='Number of points to use for embeddings')
     parser.add_argument('--labels', nargs='+', default=["mass"], help='Labels to use for embeddings')
-    parser.add_argument('--model_path', type=str, default="model/ckpt.pt", help='Path to the model checkpoint')
+    parser.add_argument('--model_path', type=str, default="model_weights/finetuned_astropt.pt", help='Path to the model checkpoint')
     parser.add_argument('--output_path', type=str, default="figures/finetuned", help='Path to save the output figures')
     args = parser.parse_args()
     

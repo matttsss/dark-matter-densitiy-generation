@@ -941,7 +941,7 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, default="model_weights/")
-    parser.add_argument("--weights_path", type=str, default="model_weights/finetuned_contrastive_ckpt.pt")
+    parser.add_argument("--weights_path", type=str, default="model_weights/finetuned_astropt.pt")
     parser.add_argument("--model_type", type=str, choices=["astropt", "fm"], default="astropt")
     parser.add_argument("--timesteps", type=int, default=1000)
     parser.add_argument("--epochs", type=int, default=300)

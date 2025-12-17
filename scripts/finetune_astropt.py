@@ -9,8 +9,8 @@ Example:
     To fine-tune an AstroPT model with supervised contrastive loss:
     
     $ python3 -m scripts.finetune_astropt \\
-        --pretrained_path model/ckpt.pt \\
-        --output_path model/finetuned_model.pt \\
+        --pretrained_path model_weights/ckpt.pt \\
+        --output_path model_weights/finetuned_model.pt \\
         --batch_size 64 \\
         --num_epochs 60 \\
         --learning_rate 1e-5 \\
@@ -114,9 +114,9 @@ def get_contrastive_weight(epoch, max_weight, warmup_epochs):
 # ==============================
 
 argparser = argparse.ArgumentParser(description="Fine-tune AstroPT model on new tasks (linear probe style).")
-argparser.add_argument("--pretrained_path", type=str, default="model/ckpt.pt",
+argparser.add_argument("--pretrained_path", type=str, default="model_weights/baseline_astropt.pt",
                        help="Path to the pretrained model weights.")
-argparser.add_argument("--output_path", type=str, default="model/finetuned_contrastive_ckpt.pt",
+argparser.add_argument("--output_path", type=str, default="model_weights/finetuned_astropt.pt",
                        help="Path to save the finetuned model weights.")
 argparser.add_argument("--batch_size", type=int, default=64,
                        help="Batch size for training.")

@@ -10,8 +10,8 @@ Example:
     To run this script as a module to generate embeddings for custom conditions:
     
     $ python3 -m scripts.plots.fm_inference \\
-        --fm_model_path model/flow_matching/best_model.pt \\
-        --astropt_model_path model/best_r_ell_model.pt \\
+        --fm_model_path model_weights/flow_matching/best_model.pt \\
+        --astropt_model_path model_weights/best_r_ell_model.pt \\
         --nb_points 14000 \\
         --nb_gen_points 6000 \\
         --labels mass label
@@ -220,9 +220,9 @@ def main(args, device):
 
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="Validate Flow Matching Model")
-    argparser.add_argument("--fm_model_path", type=str, required=True,
+    argparser.add_argument("--fm_model_path", type=str, default="model_weights/flow_model.pt",
                             help="Path to the Flow Matching model to validate")
-    argparser.add_argument("--astropt_model_path", type=str, required=True,
+    argparser.add_argument("--astropt_model_path", type=str, default="model_weights/finetuned_astropt.pt",
                             help="Path to the AstroPT model to use as reference")
     argparser.add_argument("--nb_points", type=int, default=14000,
                             help="Number of points to use for validation")

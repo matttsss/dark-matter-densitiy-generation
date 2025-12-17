@@ -9,7 +9,7 @@ Example:
     To train a flow matching model on AstroPT embeddings with custom conditions:
     
     $ python3 -m scripts.flow_model_train \\
-        --model_path model/best_r_ell_model.pt \\
+        --model_path model_weights/best_r_ell_model.pt \\
         --nb_points 14000 \\
         --epochs 5000 \\
         --sigma 1.0 \\
@@ -319,7 +319,7 @@ if __name__ == "__main__":
                     description='Trains a flow matching model on astroPT embeddings')
     parser.add_argument('--nb_points', type=int, default=7000, help='Number of points to use for embeddings')
     parser.add_argument('--labels', nargs='+', default=["mass", "label"], help='Labels to use for the conditions of the flow matching model')
-    parser.add_argument('--model_path', type=str, default="model/ckpt.pt", help='Path to the astropt checkpoint')
+    parser.add_argument('--model_path', type=str, default="model_weights/baseline_astropt.pt", help='Path to the astropt checkpoint')
     parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate for the optimizer')
     parser.add_argument('--epochs', type=int, default=3000, help='Number of training epochs')
     parser.add_argument('--batch_scale', type=int, default=20, help='Batch scales the batches to get more time samples per batch    ')

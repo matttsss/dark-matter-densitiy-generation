@@ -11,8 +11,8 @@ Example:
     generating predictions for 'mass' and 'label' conditions:
     
     $ python3 -m scripts.plots.fm_validation \\
-        --fm_model_path model/flow_matching/best_model.pt \\
-        --astropt_model_path model/best_r_ell_model.pt \\
+        --fm_model_path model_weights/flow_matching/best_model.pt \\
+        --astropt_model_path model_weights/best_r_ell_model.pt \\
         --labels mass label \\
         --nb_points 8000 \\
         --save_plots
@@ -171,8 +171,8 @@ def main(args, device):
 
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="Flow Matching Model Validation Plots")
-    argparser.add_argument("--fm_model_path", type=str, required=True, help="Path to the trained flow matching model")
-    argparser.add_argument("--astropt_model_path", type=str, required=True, help="Path to the trained AstroPT model")
+    argparser.add_argument("--fm_model_path", type=str, default="model_weights/flow_model.pt", help="Path to the trained flow matching model")
+    argparser.add_argument("--astropt_model_path", type=str, default="model_weights/finetuned_astropt.pt", help="Path to the trained AstroPT model")
     argparser.add_argument("--labels", type=str, nargs='+', required=True, help="List of label names to validate")
     argparser.add_argument("--nb_points", type=int, default=7000, help="Number of points to use for validation")
     argparser.add_argument("--save_plots", action='store_true', help="Whether to save the plots to files")
