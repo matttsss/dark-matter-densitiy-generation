@@ -97,9 +97,7 @@ if __name__ == "__main__":
     # Set plotting font size
     set_fonts()
 
-    has_metals = torch.backends.mps.is_available()  
-    device = torch.device('mps' if has_metals else 
-                          'cuda' if torch.cuda.is_available() else 
+    device = torch.device('cuda' if torch.cuda.is_available() else 
                           'cpu')
     print(f"Device: {device}")
 
@@ -119,9 +117,7 @@ if __name__ == "__main__":
     
     dl = DataLoader(
         dataset,
-        batch_size=args.batch_size,
-        num_workers=0 if has_metals else 4,
-        prefetch_factor=None if has_metals else 3
+        batch_size=args.batch_size
     )
 
     # Compute embeddings for finetuned

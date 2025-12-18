@@ -641,7 +641,7 @@ def load_astropt_datasets(model_path: str, device: torch.device, batch_size: int
 
     # Compute embeddings
     print("Computing embeddings...")
-    dl = DataLoader(dataset, batch_size=batch_size, num_workers=4, prefetch_factor=3)
+    dl = DataLoader(dataset, batch_size=batch_size)
     embeddings, features = compute_embeddings(model, dl, device, LABEL_NAMES)
     embeddings = embeddings.cpu()
     features = {k: v.cpu() for k, v in features.items()}
@@ -660,9 +660,8 @@ def load_astropt_datasets(model_path: str, device: torch.device, batch_size: int
     val_dataset = TensorDataset(all_images[val_indices], embeddings[val_indices])
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                              num_workers=4, pin_memory=(device.type == "cuda"), persistent_workers=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                            num_workers=4, pin_memory=(device.type == "cuda"), persistent_workers=True)
+                              pin_memory=(device.type == "cuda"))
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=(device.type == "cuda"))
 
     print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}")
 
@@ -690,7 +689,6 @@ def training_script(output_dir: str, weights_path: str, timesteps: int = 1000,
 
     device = torch.device(
         "cuda" if torch.cuda.is_available() else
-        "mps" if torch.backends.mps.is_available() else
         "cpu"
     )
     print(f"Training diffusion on device: {device}")

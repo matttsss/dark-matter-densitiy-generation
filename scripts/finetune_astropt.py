@@ -154,7 +154,6 @@ contrastive_warmup_epochs = args.contrastive_warmup_epochs
 contrastive_temperature = args.contrastive_temperature
 
 device = torch.device("cuda" if torch.cuda.is_available() else
-                      "mps" if torch.backends.mps.is_available() else
                       "cpu")
 
 if args.use_wandb:
@@ -200,8 +199,6 @@ if args.normalize_features:
 train_dl = DataLoader(
     train_dataset,
     batch_size=batch_size,
-    num_workers=4,
-    prefetch_factor=2,
     pin_memory=True,
     shuffle=True
 )
@@ -209,8 +206,6 @@ train_dl = DataLoader(
 val_dl = DataLoader(
     val_dataset,
     batch_size=4 * batch_size,
-    num_workers=4,
-    prefetch_factor=2,
     pin_memory=True,
     shuffle=False
 )

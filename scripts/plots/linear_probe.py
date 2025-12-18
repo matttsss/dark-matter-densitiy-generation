@@ -35,11 +35,8 @@ if __name__ == "__main__":
     set_fonts()
     
     labels_name = args.labels  
-
-    has_metals = torch.backends.mps.is_available()  
-    device = torch.device('mps' if has_metals else 
-                          'cuda' if torch.cuda.is_available() else 
-                          'cpu')
+ 
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Generating embeddings on device: {device}")
 
 
@@ -57,9 +54,7 @@ if __name__ == "__main__":
 
     dl = DataLoader(
         dataset,
-        batch_size = args.batch_size,
-        num_workers = 0 if has_metals else 4,
-        prefetch_factor = None if has_metals else 3
+        batch_size = args.batch_size
     )
 
     embeddings, labels = compute_embeddings(model, dl, device, labels_name)

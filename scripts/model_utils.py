@@ -37,7 +37,7 @@ def compute_embeddings(model, dataloader, device: torch.device, label_names: lis
     Args:
         model: AstroPT model in evaluation mode (GPT)
         dataloader (DataLoader): DataLoader yielding batches with 'image' and label columns
-        device (torch.device): Device for computation (cuda/mps/cpu)
+        device (torch.device): Device for computation (cuda/cpu)
         label_names (list[str]): Names of label columns to extract from batches
         disable_tqdm (bool): Whether to disable progress bar (default: False)
     
@@ -72,7 +72,7 @@ def get_embeddings_datasets(model_path, device, label_names, split_ratio=0.8, nb
     
     Args:
         model_path (str): Path to trained AstroPT model checkpoint
-        device (torch.device): Device for computation (cuda/mps/cpu)
+        device (torch.device): Device for computation (cuda/cpu)
         label_names (list[str]): Names of conditions/labels to extract
         split_ratio (float): Fraction of data for training (default: 0.8)
         nb_points (int): Maximum number of samples to use (default: 14000)
@@ -92,12 +92,9 @@ def get_embeddings_datasets(model_path, device, label_names, split_ratio=0.8, nb
             .shuffle(seed=42) \
             .take(nb_points)    
 
-    has_metals = device.type == 'mps'
     dl = DataLoader(
         dataset,
-        batch_size = batch_size,
-        num_workers = 0 if has_metals else 4,
-        prefetch_factor = None if has_metals else 3
+        batch_size = batch_size
     )
 
     embeddings, cond_dict = compute_embeddings(model, dl, device, label_names)
@@ -195,7 +192,7 @@ def load_fm_model(checkpoint_path, device, strict=True, **extra_model_config):
     
     Args:
         checkpoint_path (str): Path to model checkpoint containing 'config' and 'state_dict'
-        device (torch.device or str): Device to load model onto (cuda/mps/cpu)
+        device (torch.device or str): Device to load model onto (cuda/cpu)
         strict (bool): If True, require exact weight match; if False, allow missing/extra keys (default: True)
         **extra_model_config: Additional config parameters to override checkpoint settings
     
@@ -224,7 +221,7 @@ def load_astropt_model(checkpoint_path, device, strict=True, **extra_model_confi
     
     Args:
         checkpoint_path (str): Path to model checkpoint
-        device (torch.device or str): Device to load model onto (cuda/mps/cpu)
+        device (torch.device or str): Device to load model onto (cuda/cpu)
         strict (bool): If True, require exact weight match (default: True)
         **extra_model_config: Additional config parameters to override checkpoint settings
     
@@ -263,7 +260,7 @@ def batch_to_device(batch, device):
     
     Args:
         batch: Batch data (torch.Tensor, dict, list, tuple, or nested combinations)
-        device (torch.device or str): Target device (cuda/mps/cpu)
+        device (torch.device or str): Target device (cuda/cpu)
     
     Returns:
         Same structure as input with all tensors moved to target device

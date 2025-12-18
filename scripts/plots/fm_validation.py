@@ -180,8 +180,7 @@ if __name__ == "__main__":
     argparser.add_argument("--save_plots", action='store_true', help="Whether to save the plots to files")
     args = argparser.parse_args()
 
-    device = torch.device("mps" if torch.backends.mps.is_available() else 
-                          "cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device( "cuda" if torch.cuda.is_available() else "cpu")
 
     set_fonts()
     main(args, device)

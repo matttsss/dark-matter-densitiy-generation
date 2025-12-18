@@ -4,8 +4,6 @@
 
 This repository implements the content of the project (detailed in `report.pdf`). In the following sections, we will show you how to train and run inference with the models contained inside the report.
 
-Note that while in the code some scripts support MPS, some still have issues with it. Hence, we strongly recommend using cuda or as a last resort the cpu to run our code.
-
 ## Project Structure
 ```
 ├── .github/                    # GitHub configuration

@@ -85,9 +85,7 @@ def main(args, device):
 
     dl = DataLoader(
         dataset,
-        batch_size = args.batch_size,
-        num_workers = 0 if (device.type == "mps") else 4,
-        prefetch_factor = None if (device.type == "mps") else 3
+        batch_size = args.batch_size
     )
 
     # ============== Compute embeddings =================
@@ -232,8 +230,7 @@ if __name__ == "__main__":
     argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for DataLoader")
     args = argparser.parse_args()
 
-    device = torch.device("mps" if torch.backends.mps.is_available() else 
-                          "cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     set_fonts()
     main(args, device)
