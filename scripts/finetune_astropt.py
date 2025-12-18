@@ -184,10 +184,10 @@ else:
 # Load datasets
 # ----------------------------------------------------------
 dataset = merge_datasets([
-        "data/DarkData/BAHAMAS/bahamas_0.1.pkl",
-        "data/DarkData/BAHAMAS/bahamas_0.3.pkl",
-        "data/DarkData/BAHAMAS/bahamas_1.pkl",
-        "data/DarkData/BAHAMAS/bahamas_cdm.pkl"], 
+        "data/BAHAMAS/bahamas_0.1.pkl",
+        "data/BAHAMAS/bahamas_0.3.pkl",
+        "data/BAHAMAS/bahamas_1.pkl",
+        "data/BAHAMAS/bahamas_cdm.pkl"], 
         label_names, stack_features=True)
 
 dataset = dataset.train_test_split(test_size=0.3, seed=42)
