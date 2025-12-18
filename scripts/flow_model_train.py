@@ -322,7 +322,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, default="model_weights/baseline_astropt.pt", help='Path to the astropt checkpoint')
     parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate for the optimizer')
     parser.add_argument('--epochs', type=int, default=3000, help='Number of training epochs')
-    parser.add_argument('--batch_scale', type=int, default=20, help='Batch scales the batches to get more time samples per batch    ')
+    parser.add_argument('--batch_scale', type=int, default=1, help='Batch scales the batches to get more time samples per batch')
     
     parser.add_argument('--sigma', type=float, default=0.1, help='Sigma value for the flow matching model')
     parser.add_argument('--ot_method', type=str, default="default", help='Optimal transport method to use')

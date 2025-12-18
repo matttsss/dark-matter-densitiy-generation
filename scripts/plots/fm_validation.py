@@ -155,7 +155,8 @@ def main(args, device):
 
     # Compute datasets
     (train_embeddings, val_embeddings), (train_cond, val_cond) = \
-        get_embeddings_datasets(args.astropt_model_path, device, args.labels, split_ratio=0.8, nb_points=args.nb_points)
+        get_embeddings_datasets(args.astropt_model_path, device, args.labels, split_ratio=0.8, 
+                                nb_points=args.nb_points, batch_size=args.batch_size)
 
     # Generate plots and metrics
     figures, _ = plot_results(fm_model, train_embeddings, train_cond, val_embeddings, val_cond, args.labels)
@@ -175,6 +176,7 @@ if __name__ == "__main__":
     argparser.add_argument("--astropt_model_path", type=str, default="model_weights/finetuned_astropt.pt", help="Path to the trained AstroPT model")
     argparser.add_argument("--labels", type=str, nargs='+', required=True, help="List of label names to validate")
     argparser.add_argument("--nb_points", type=int, default=7000, help="Number of points to use for validation")
+    argparser.add_argument("--batch_size", type=int, default=32, help="Batch size for DataLoader")
     argparser.add_argument("--save_plots", action='store_true', help="Whether to save the plots to files")
     args = argparser.parse_args()
 

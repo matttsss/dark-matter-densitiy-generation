@@ -91,6 +91,7 @@ if __name__ == "__main__":
     parser.add_argument('--labels', nargs='+', default=["label", "mass"])
     parser.add_argument('--finetuned_model_path', type=str, default="model_weights/finetuned_astropt.pt")
     parser.add_argument('--baseline_model_path', type=str, default="model_weights/baseline_astropt.pt")
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for DataLoader')
     args = parser.parse_args()
     
     # Set plotting font size
@@ -118,7 +119,7 @@ if __name__ == "__main__":
     
     dl = DataLoader(
         dataset,
-        batch_size=64 if has_metals else 128,
+        batch_size=args.batch_size,
         num_workers=0 if has_metals else 4,
         prefetch_factor=None if has_metals else 3
     )

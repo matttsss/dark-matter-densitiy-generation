@@ -69,23 +69,23 @@ Once the weights are downloaded, you can train/finetune the models in the follow
 
 ```bash
 python3 -m scripts.finetune_astropt \
-      --pretrained_path model_weights/baseline_astropt.pt \
-      --output_path model_weights/finetuned_model.pt \
-      --batch_size 64 \
-      --num_epochs 60 \
-      --learning_rate 1e-5 \
-      --contrastive_weight 0.1 \
-      --label_names mass label BCG_e1 BCG_e2
+     --pretrained_path model_weights/baseline_astropt.pt \
+     --output_path model_weights/finetuned_model.pt \
+     --batch_size 32 \
+     --num_epochs 60 \
+     --learning_rate 1e-5 \
+     --contrastive_weight 0.1 \
+     --label_names mass label BCG_e1 BCG_e2
 ```
 
 ### Flow Matching
 ```bash
 python3 -m scripts.flow_model_train \
-      --model_path model_weights/finetuned_astropt.pt \
-      --nb_points 14000 \
-      --epochs 5000 \
-      --sigma 1.0 \
-      --save_plots
+     --model_path model_weights/finetuned_astropt.pt \
+     --nb_points 14000 \
+     --epochs 5000 \
+     --sigma 1.0 \
+     --save_plots
 ```
 
 ### Diffusion Model
@@ -120,20 +120,20 @@ You will then see the generated image at generated.png (at root)
 
 To make the comparison plots, you can run the following:
 ```bash
-python3 -m scripts.plots.finetune_comparison 
-      --finetuned_model_path model_weights/finetuned_astropt.pt 
-      --baseline_model_path model_weights/baseline_astropt.pt 
-      --labels label mass 
-      --nb_points 14000
+python3 -m scripts.plots.finetune_comparison \
+     --finetuned_model_path model_weights/finetuned_astropt.pt \
+     --baseline_model_path model_weights/baseline_astropt.pt \
+     --labels label mass \
+     --nb_points 14000
 ```
 
 And to get more fine-grained plots:
 ```bash
 python3 -m scripts.plots.linear_probe \
-      --model_path model_weights/finetuned_astropt.pt \
-      --labels label mass BCG_e1 BCG_e2 BCG_stellar_conc \
-      --output_path figures/ \ 
-      --nb_points 14000
+     --model_path model_weights/finetuned_astropt.pt \
+     --labels label mass BCG_e1 BCG_e2 BCG_stellar_conc \
+     --output_path figures/ \
+     --nb_points 14000
 ```
 
 ### Flow Matching plots
@@ -141,21 +141,21 @@ python3 -m scripts.plots.linear_probe \
 In order to get accuracy plots:
 ```bash
 python3 -m scripts.plots.fm_validation \
-      --fm_model_path model_weights/flow_model.pt \
-      --astropt_model_path model_weights/finetuned_astropt.pt \
-      --labels mass label \
-      --nb_points 8000 \
-      --save_plots
+     --fm_model_path model_weights/flow_model.pt \
+     --astropt_model_path model_weights/finetuned_astropt.pt \
+     --labels mass label \
+     --nb_points 8000 \
+     --save_plots
 ```
 
 To try specific conditions:
 ```bash
 python3 -m scripts.plots.fm_inference \
-      --fm_model_path model_weights/flow_model.pt \
-      --astropt_model_path model_weights/finetuned_astropt.pt \
-      --nb_points 14000 \
-      --nb_gen_points 6000 \
-      --labels mass label
+     --fm_model_path model_weights/flow_model.pt \
+     --astropt_model_path model_weights/finetuned_astropt.pt \
+     --nb_points 14000 \
+     --nb_gen_points 6000 \
+     --labels mass label
 ```
 
 ## References and external libraries

@@ -27,6 +27,7 @@ if __name__ == "__main__":
     parser.add_argument('--nb_points', type=int, default=1000, help='Number of points to use for embeddings')
     parser.add_argument('--labels', nargs='+', default=["mass"], help='Labels to use for embeddings')
     parser.add_argument('--model_path', type=str, default="model_weights/finetuned_astropt.pt", help='Path to the model checkpoint')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for DataLoader')
     parser.add_argument('--output_path', type=str, default="figures/finetuned", help='Path to save the output figures')
     args = parser.parse_args()
     
@@ -56,7 +57,7 @@ if __name__ == "__main__":
 
     dl = DataLoader(
         dataset,
-        batch_size = 64 if has_metals else 128,
+        batch_size = args.batch_size,
         num_workers = 0 if has_metals else 4,
         prefetch_factor = None if has_metals else 3
     )

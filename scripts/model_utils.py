@@ -63,7 +63,7 @@ def compute_embeddings(model, dataloader, device: torch.device, label_names: lis
     all_labels = {label: torch.cat(all_labels[label], dim=0) for label in label_names}
     return all_embeddings, all_labels
 
-def get_embeddings_datasets(model_path, device, label_names, split_ratio=0.8, nb_points=14000):
+def get_embeddings_datasets(model_path, device, label_names, split_ratio=0.8, nb_points=14000, batch_size=32):
     """
     Load BAHAMAS datasets, compute embeddings, and split into train/validation sets.
     
@@ -95,7 +95,7 @@ def get_embeddings_datasets(model_path, device, label_names, split_ratio=0.8, nb
     has_metals = device.type == 'mps'
     dl = DataLoader(
         dataset,
-        batch_size = 64 if has_metals else 512,
+        batch_size = batch_size,
         num_workers = 0 if has_metals else 4,
         prefetch_factor = None if has_metals else 3
     )

@@ -118,7 +118,7 @@ argparser.add_argument("--pretrained_path", type=str, default="model_weights/bas
                        help="Path to the pretrained model weights.")
 argparser.add_argument("--output_path", type=str, default="model_weights/finetuned_astropt.pt",
                        help="Path to save the finetuned model weights.")
-argparser.add_argument("--batch_size", type=int, default=64,
+argparser.add_argument("--batch_size", type=int, default=32,
                        help="Batch size for training.")
 argparser.add_argument("--learning_rate", type=float, default=1e-5,
                        help="Learning rate for the optimizer.")

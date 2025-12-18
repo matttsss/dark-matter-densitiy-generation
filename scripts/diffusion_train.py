@@ -641,7 +641,7 @@ def load_astropt_datasets(model_path: str, device: torch.device, batch_size: int
 
     # Compute embeddings
     print("Computing embeddings...")
-    dl = DataLoader(dataset, batch_size=512, num_workers=4, prefetch_factor=3)
+    dl = DataLoader(dataset, batch_size=batch_size, num_workers=4, prefetch_factor=3)
     embeddings, features = compute_embeddings(model, dl, device, LABEL_NAMES)
     embeddings = embeddings.cpu()
     features = {k: v.cpu() for k, v in features.items()}
