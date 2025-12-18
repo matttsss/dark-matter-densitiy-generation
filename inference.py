@@ -239,7 +239,7 @@ if __name__ == "__main__":
     # FM mode
     parser.add_argument("--mass", type=float, help="Mass value (FM mode)")
     parser.add_argument("--label", type=float, help="Label value (FM mode)")
-    parser.add_argument("--fm_path", type=str, default="model_weights/flowmodel.pt")
+    parser.add_argument("--fm_path", type=str, default="model_weights/flow_model.pt")
     parser.add_argument("--mass_min", type=float, default=13.5)
     parser.add_argument("--mass_max", type=float, default=15.5)
     
@@ -263,12 +263,14 @@ if __name__ == "__main__":
     if args.mode == "fm":
         if args.label is None:
             parser.error("FM mode requires --label")
-            if args.mass is None:
-                parser.error("FM mode requires --mass or --mass_sweep")
-            images = run_fm_pipeline(args.mass, args.label, args.fm_path, ddpm_fm, device,
-                                     args.ddim_steps, args.guidance_scale)
-            torch.save(images, args.output)
-            plot_fm_result(images[0, 0].cpu().numpy(), args.mass, args.label, args.save_png)
+        
+        if args.mass is None:
+            parser.error("FM mode requires --mass or --mass_sweep")
+        
+        images = run_fm_pipeline(args.mass, args.label, args.fm_path, ddpm_fm, device,
+                                    args.ddim_steps, args.guidance_scale)
+        torch.save(images, args.output)
+        plot_fm_result(images[0, 0].cpu().numpy(), args.mass, args.label, args.save_png)
     
     elif args.mode == "astropt":
         if args.sample_idx is None:

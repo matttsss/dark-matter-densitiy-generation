@@ -194,7 +194,7 @@ def main(args, device):
     model_name = args.model_path.split('/')[-1].replace('.pt','')
     sigma_name = f"sigma_{args.sigma:.3f}".replace('.','_')
     path_prefix = args.path_prefix + '_' if args.path_prefix else ""
-    checkpoint_path = f"model/flow_matching/{path_prefix}{args.ot_method}_{args.mlp_hidden_dim}_{sigma_name}_{model_name}.pt"
+    checkpoint_path = f"model_weights/{path_prefix}{args.ot_method}_{args.mlp_hidden_dim}_{sigma_name}_{model_name}.pt"
 
     # ==============================================
     # Setup Wandb

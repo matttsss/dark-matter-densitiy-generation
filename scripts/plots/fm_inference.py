@@ -168,8 +168,8 @@ def main(args, device):
     ax.set_title("Flow Matching Predictions vs True Values\nMSE: {:.4f}".format(mse))
     ax.legend()
     fig.tight_layout()
-    fig.savefig(f"figures/flow_matching/inference/fm_gen_{file_suffix}.png")
-    print(f"Saved figure to figures/flow_matching/inference/fm_gen_{file_suffix}.png")
+    fig.savefig(f"figures//fm_gen_{file_suffix}.png")
+    print(f"Saved figure to figures/fm_gen_{file_suffix}.png")
     plt.show()
     plt.close(fig)
 
@@ -212,8 +212,8 @@ def main(args, device):
 
 
     fig.tight_layout()
-    fig.savefig(f"figures/flow_matching/inference/fm_umap_{file_suffix}.png")
-    print(f"Saved figure to figures/flow_matching/inference/fm_umap_{file_suffix}.png")
+    fig.savefig(f"figures/fm_umap_{file_suffix}.png")
+    print(f"Saved figure to figures/fm_umap_{file_suffix}.png")
     plt.show()
     plt.close(fig)
 
